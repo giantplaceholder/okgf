@@ -16,6 +16,14 @@ static void reverse(uint8_t *p, unsigned count) {
         p[count - i - 1] = t;
     }
 }
+void OKGF_CALL okgf_cancel_read_psd(OkgfPsdReadContext *context) {
+    if (!context)
+        return;
+    if (context->owns_source)
+        free((void *)context->source_data);
+    free(context->header);
+    free(context);
+}
 static OkgfPsdReadContext *begin(const uint8_t *source, int32_t size, int32_t *width,
                                  int32_t *height, int32_t *palette_count) {
     if (!source || size < 26 || memcmp(source, "8BPS", 4) ||
@@ -143,10 +151,7 @@ static int32_t decode(OkgfPsdReadContext *context, void *pixels, int32_t pitch, 
         memcpy((uint8_t *)pixels + (ptrdiff_t)y * pitch, decoded + (size_t)y * width * channels,
                (size_t)width * channels);
     free(decoded);
-    if (context->owns_source)
-        free((void *)context->source_data);
-    free(context->header);
-    free(context);
+    okgf_cancel_read_psd(context);
     return 1;
 failure:
     free(decoded);

@@ -247,6 +247,40 @@ static uint8_t sample(RescaleMath *m, const RescaleContributions *row, const uin
     return (uint8_t)fp_integer(m->a, 0);
 }
 
+/* Accumulate independent RGBA channels together so host arithmetic can use SIMD. Keep the
+ * original tap order, separate product/sum rounding, and byte truncation in each pass. Only
+ * rows already selected for host arithmetic may use this path. */
+static void sample_rgba(const RescaleContributions *row, const uint8_t *source, ptrdiff_t stride,
+                        uint8_t *dest) {
+    if (row->arithmetic == 24) {
+        float sum[4] = {0};
+        for (int32_t i = 0; i < row->count; ++i) {
+            const RescaleTap *tap = &row->taps[i];
+            const uint8_t *pixel = source + (ptrdiff_t)tap->source_index * stride;
+            float weight = (float)tap->weight.host;
+            for (int c = 0; c < 4; ++c) {
+                float product = weight * pixel[c];
+                sum[c] += product;
+            }
+        }
+        for (int c = 0; c < 4; ++c)
+            dest[c] = sum[c] <= 0 ? 0 : sum[c] >= 255 ? 255 : (uint8_t)sum[c];
+    } else {
+        double sum[4] = {0};
+        for (int32_t i = 0; i < row->count; ++i) {
+            const RescaleTap *tap = &row->taps[i];
+            const uint8_t *pixel = source + (ptrdiff_t)tap->source_index * stride;
+            double weight = tap->weight.host;
+            for (int c = 0; c < 4; ++c) {
+                double product = weight * pixel[c];
+                sum[c] += product;
+            }
+        }
+        for (int c = 0; c < 4; ++c)
+            dest[c] = sum[c] <= 0 ? 0 : sum[c] >= 255 ? 255 : (uint8_t)sum[c];
+    }
+}
+
 void OKGF_CALL OKGF_Rescale(void *dest, int32_t width, int32_t height, int32_t dest_pitch,
                             const void *source, int32_t source_width, int32_t source_height,
                             int32_t source_pitch, int32_t bytes_per_pixel, int32_t filter) {
@@ -261,16 +295,36 @@ void OKGF_CALL OKGF_Rescale(void *dest, int32_t width, int32_t height, int32_t d
     uint8_t *temp = malloc((size_t)source_height * dest_pitch);
     if (!horizontal || !vertical || !temp)
         goto done;
-    for (int32_t channel = 0; channel < bytes_per_pixel; ++channel) {
+    if (bytes_per_pixel == 4) {
         for (int32_t y = 0; y < source_height; ++y) {
-            const uint8_t *row = (const uint8_t *)source + (ptrdiff_t)y * source_pitch + channel;
-            for (int32_t x = 0; x < width; ++x)
-                temp[(ptrdiff_t)y * dest_pitch + (ptrdiff_t)x * bytes_per_pixel + channel] =
-                    sample(&m, &horizontal[x], row, bytes_per_pixel);
+            const uint8_t *row = (const uint8_t *)source + (ptrdiff_t)y * source_pitch;
+            for (int32_t x = 0; x < width; ++x) {
+                uint8_t *d = temp + (ptrdiff_t)y * dest_pitch + (ptrdiff_t)x * 4;
+                if (horizontal[x].arithmetic != 64)
+                    sample_rgba(&horizontal[x], row, 4, d);
+                else
+                    for (int c = 0; c < 4; ++c)
+                        d[c] = sample(&m, &horizontal[x], row + c, 4);
+            }
+        }
+    } else {
+        for (int32_t channel = 0; channel < bytes_per_pixel; ++channel) {
+            for (int32_t y = 0; y < source_height; ++y) {
+                const uint8_t *row =
+                    (const uint8_t *)source + (ptrdiff_t)y * source_pitch + channel;
+                for (int32_t x = 0; x < width; ++x)
+                    temp[(ptrdiff_t)y * dest_pitch + (ptrdiff_t)x * bytes_per_pixel + channel] =
+                        sample(&m, &horizontal[x], row, bytes_per_pixel);
+            }
         }
     }
     for (int32_t y = 0; y < height; ++y) {
         for (int32_t x = 0; x < width; ++x) {
+            if (bytes_per_pixel == 4 && vertical[y].arithmetic != 64) {
+                sample_rgba(&vertical[y], temp + (ptrdiff_t)x * 4, dest_pitch,
+                            (uint8_t *)dest + (ptrdiff_t)y * dest_pitch + (ptrdiff_t)x * 4);
+                continue;
+            }
             for (int32_t channel = 0; channel < bytes_per_pixel; ++channel) {
                 ptrdiff_t offset = (ptrdiff_t)x * bytes_per_pixel + channel;
                 ((uint8_t *)dest)[(ptrdiff_t)y * dest_pitch + offset] =

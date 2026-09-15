@@ -329,7 +329,8 @@ void OKGF_CALL OKGF_Rescale(void *dest, int32_t width, int32_t height, int32_t d
 /* BMP contexts borrow the source until decoding finishes. Successful decoding consumes the
  * context. The RGB decoder writes three bytes per pixel, including for accepted depths above
  * 24. Indexed begin accepts 1-, 4-, and 8-bit headers; indexed decode supports only
- * uncompressed 8-bit data and a packed RGB palette.
+ * uncompressed 8-bit data and a packed RGB palette. Counts above 256 are accepted when the
+ * complete palette is present; caller-provided palette storage needs 3 * palette_count bytes.
  * Row stride rounds up only when (row_bytes & 2) is nonzero.
  * Input dimensions must be positive and all input data readable. Begin returns
  * NULL on failure; failed decode returns 0 and leaves the context owned by the caller. */
@@ -348,6 +349,9 @@ OkgfBmpReadContext *OKGF_CALL OKGR_ReadStart_BMPPAL_Buf(const uint8_t *source, i
 int32_t OKGF_CALL OKGF_Read_BMP(OkgfBmpReadContext *context, void *pixels, int32_t pitch_bytes);
 int32_t OKGF_CALL OKGF_Read_BMPPAL(OkgfBmpReadContext *context, void *pixels, int32_t pitch_bytes,
                                    void *palette_rgb);
+/* Cancellation frees the context and any owned source. These helpers accept NULL; do not
+ * cancel a context already consumed by a successful direct decode. */
+void OKGF_CALL okgf_cancel_read_bmp(OkgfBmpReadContext *context);
 /* PNG decoding reduces 16-bit samples to 8 bits and unpacks sub-byte samples. Ordinary decoding
  * expands palettes and transparency, then writes RGB or RGBA through the supplied masks; RGB
  * sources use alpha 0. Indexed decoding accepts palettes or grayscale, ignores tRNS, and writes
@@ -373,6 +377,7 @@ int32_t OKGF_CALL OKGF_Read_PNG(OkgfPngReadContext *context, void *pixels, int32
                                 uint32_t alpha_mask, int32_t bytes_per_pixel);
 int32_t OKGF_CALL OKGF_Read_PNGPAL(OkgfPngReadContext *context, void *pixels, int32_t pitch_bytes,
                                    void *palette_rgba);
+void OKGF_CALL okgf_cancel_read_png(OkgfPngReadContext *context);
 
 /* JPEG decoding uses libjpeg defaults. RGB, grayscale, and CMYK produce 3, 1, and 4 bytes per
  * pixel, respectively. The source is borrowed; successful decoding consumes the context and
@@ -386,14 +391,15 @@ typedef struct OkgfJpegReadContext {
 OkgfJpegReadContext *OKGF_CALL OKGR_ReadStart_JPEG_Buf(const uint8_t *source, int32_t source_size,
                                                        int32_t *width, int32_t *height);
 int32_t OKGF_CALL OKGF_Read_JPEG(OkgfJpegReadContext *context, void *pixels, int32_t pitch_bytes);
+void OKGF_CALL okgf_cancel_read_jpeg(OkgfJpegReadContext *context);
 
 /* PSD input requires positive dimensions, 1..4 channels, and 8-bit samples, stored raw or with
  * row RLE. Channels are interleaved without color conversion. Indexed mode 2 creates four-byte
  * RGBA entries from 768-byte RGB planes or a 1024-byte RGBA extension. RLE command 128 repeats
  * 129 bytes. Rows must be complete and fit the reader's scratch buffers. Begin copies and
  * byte-swaps the 26-byte header while borrowing the source. Successful decoding frees the
- * context, header, and any owned source. Begin returns NULL on failure; decode returns 0. The
- * header copy uses little-endian fields. */
+ * context, header, and any owned source. Begin returns NULL on failure; failed decode returns
+ * 0 and leaves the context owned by the caller. The header copy uses little-endian fields. */
 typedef struct OkgfPsdReadContext {
     uint8_t *header;
     const uint8_t *source_data;
@@ -407,9 +413,11 @@ OkgfPsdReadContext *OKGF_CALL OKGR_ReadStart_PSDPAL_Buf(const uint8_t *source, i
 int32_t OKGF_CALL OKGF_Read_PSD(OkgfPsdReadContext *context, void *pixels, int32_t pitch_bytes);
 int32_t OKGF_CALL OKGF_Read_PSDPAL(OkgfPsdReadContext *context, void *pixels, int32_t pitch_bytes,
                                    void *palette_rgba);
+void OKGF_CALL okgf_cancel_read_psd(OkgfPsdReadContext *context);
 
-/* Image readers own a format-specific context and borrow the source. Successful Read/ReadPal
- * calls consume both contexts and free the source when owns_source is set. ReadStartPal
+/* Image readers own a format-specific context and borrow the source. Read/ReadPal calls
+ * consume both contexts on success or failure and free the source when owns_source is set.
+ * Use okgf_cancel_read to abandon a successful Begin without decoding. ReadStartPal
  * accepts PNG and indexed PSD with one or two channels. It fills the caller's palette count
  * but leaves the outer context's palette_count at zero.
  *
@@ -418,7 +426,7 @@ int32_t OKGF_CALL OKGF_Read_PSDPAL(OkgfPsdReadContext *context, void *pixels, in
  * writes four bytes even when bytes_per_pixel is 3; destination storage must account for this.
  * Use ReadPal for indexed PSD. Ordinary JPEG Read supports RGB only. Dimensions must be
  * positive; negative destination pitches are accepted. Begin returns NULL on failure. Failed
- * decoding returns 0 and leaves the context owned by the caller. */
+ * decoding returns 0; the consumed context must not be reused or cancelled. */
 typedef struct OkgfReadContext {
     void *codec_context;
     OkgfImageKind image_kind;
@@ -436,6 +444,8 @@ int32_t OKGF_CALL OKGF_Read(OkgfReadContext *context, void *pixels, int32_t pitc
                             uint32_t alpha_mask, int32_t bytes_per_pixel);
 int32_t OKGF_CALL OKGF_ReadPal(OkgfReadContext *context, void *pixels, int32_t pitch_bytes,
                                void *palette_rgba);
+/* Accepts NULL. Frees both contexts and any source owned by the outer context. */
+void OKGF_CALL okgf_cancel_read(OkgfReadContext *context);
 
 /* BMP writes uncompressed 16-, 24-, or 32-bit pixels, copying full positive-pitch rows in
  * reverse order. Its BI_RGB header ignores color masks and clears reserved bytes. PNG writes

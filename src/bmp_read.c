@@ -25,14 +25,19 @@ static OkgfBmpReadContext *begin(const uint8_t *source, int32_t source_size, int
                 return NULL;
             count = 1 << depth;
         }
+        if (count < 0)
+            return NULL;
     } else if (depth < 24) {
         return NULL;
     }
+    uint32_t offset = okgf_load32(source + 10);
+    if (offset > (uint32_t)source_size)
+        return NULL;
     OkgfBmpReadContext *context = calloc(1, sizeof(*context));
     if (!context)
         return NULL;
     context->header = source;
-    context->pixels = source + okgf_load32(source + 10);
+    context->pixels = source + offset;
     context->palette_count = count;
     context->source_data = source;
     context->source_size = source_size;
@@ -53,7 +58,9 @@ OkgfBmpReadContext *OKGF_CALL OKGR_ReadStart_BMPPAL_Buf(const uint8_t *source, i
     return begin(source, source_size, width, height, palette_count);
 }
 
-static void release(OkgfBmpReadContext *context) {
+void OKGF_CALL okgf_cancel_read_bmp(OkgfBmpReadContext *context) {
+    if (!context)
+        return;
     if (context->owns_source)
         free((void *)context->source_data);
     free(context);
@@ -68,10 +75,15 @@ static int32_t decode(OkgfBmpReadContext *context, void *pixels, int32_t pitch, 
         return 0;
     int64_t row_bytes = width * (palette ? 1 : 3);
     int64_t stride = row_bytes & 2 ? (row_bytes & ~INT64_C(3)) + 4 : row_bytes;
-    if (!palette && (context->source_size - (int64_t)okgf_load32(header + 10) < stride * height ||
-                     context->source_size - (int64_t)okgf_load32(header + 10) < 3))
+    int64_t available = context->source_size - (int64_t)okgf_load32(header + 10);
+    if (available < 0 || stride > available / height)
         return 0;
     if (palette) {
+        /* Begin also accepts headers without pixel data. Validate the palette and rows before
+         * decoding, including counts above 256 that the original DLL accepts. */
+        if (context->palette_count <= 0 ||
+            (int64_t)context->palette_count * 4 > (int64_t)context->source_size - 54)
+            return 0;
         const uint8_t *entry = context->source_data + 54;
         for (int32_t i = 0; i < context->palette_count; ++i, entry += 4, palette += 3) {
             palette[0] = entry[2];
@@ -102,7 +114,7 @@ static int32_t decode(OkgfBmpReadContext *context, void *pixels, int32_t pitch, 
         source -= stride;
         dest += pitch;
     }
-    release(context);
+    okgf_cancel_read_bmp(context);
     return 1;
 }
 int32_t OKGF_CALL OKGF_Read_BMP(OkgfBmpReadContext *context, void *pixels, int32_t pitch_bytes) {

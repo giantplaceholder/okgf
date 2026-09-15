@@ -19,7 +19,9 @@ static void ignore_warning(png_structp png, png_const_charp message) {
     (void)message;
 }
 
-static void destroy(OkgfPngReadContext *context) {
+void OKGF_CALL okgf_cancel_read_png(OkgfPngReadContext *context) {
+    if (!context)
+        return;
     png_structp png = context->png;
     png_infop info = context->info;
     png_destroy_read_struct(&png, &info, NULL);
@@ -42,11 +44,11 @@ static OkgfPngReadContext *begin(const uint8_t *source, int32_t source_size, int
     png_infop info = png ? png_create_info_struct(png) : NULL;
     context->info = info;
     if (!info) {
-        destroy(context);
+        okgf_cancel_read_png(context);
         return NULL;
     }
     if (setjmp(png_jmpbuf(png))) {
-        destroy(context);
+        okgf_cancel_read_png(context);
         return NULL;
     }
     png_set_read_fn(png, context, read_source);
@@ -68,11 +70,11 @@ static OkgfPngReadContext *begin(const uint8_t *source, int32_t source_size, int
         } else if (color_type == PNG_COLOR_TYPE_GRAY) {
             context->palette_count = 256;
         } else {
-            destroy(context);
+            okgf_cancel_read_png(context);
             return NULL;
         }
         if (png_get_channels(png, info) != 1) {
-            destroy(context);
+            okgf_cancel_read_png(context);
             return NULL;
         }
     }
@@ -164,7 +166,7 @@ static int32_t decode(OkgfPngReadContext *context, void *pixels, int32_t pitch,
     }
     free(data);
     free(rows);
-    destroy(context);
+    okgf_cancel_read_png(context);
     return 1;
 }
 

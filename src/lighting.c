@@ -11,7 +11,9 @@ static void shift_light(void *pixels, int32_t pitch, int32_t width, int32_t heig
         return;
     uint8_t *d = pixels;
     unsigned n = shift < 0 ? 0u - (uint32_t)shift : (uint32_t)shift;
-    uint32_t m = okgf_shift_mask565(n);
+    /* Original: 0x1005C53C..0x1005C54F. NEG leaves INT32_MIN negative, selecting the
+     * all-ones mask. Its shift count is zero, so the complement path clears pixels. */
+    uint32_t m = shift == INT32_MIN ? UINT16_MAX : okgf_shift_mask565(n);
     m |= m << 16;
     unsigned tail = (unsigned)(((uintptr_t)d >> 1) ^ (uint32_t)width) & 1;
     unsigned pairs = ((unsigned)width - tail) >> 1;

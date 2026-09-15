@@ -106,12 +106,39 @@ OkgfReadContext *OKGF_CALL OKGF_ReadStartPal_Buf(const void *source, int32_t sou
     return finish_begin(context, width, height);
 }
 static int32_t finish_read(OkgfReadContext *context, int32_t success) {
-    if (success) {
-        if (context->owns_source)
-            free((void *)context->source_data);
-        free(context);
-    }
+    /* Successful codec reads already consumed their context. Failed game-facing reads must
+     * also release it: the game discards its pointer before checking the return value. */
+    if (success)
+        context->codec_context = NULL;
+    okgf_cancel_read(context);
     return success;
+}
+void OKGF_CALL okgf_cancel_read(OkgfReadContext *context) {
+    if (!context)
+        return;
+    switch (context->image_kind) {
+    case OKGF_IMAGE_BMP:
+    case OKGF_IMAGE_INDEXED_BMP:
+        okgf_cancel_read_bmp(context->codec_context);
+        break;
+    case OKGF_IMAGE_JPEG:
+        okgf_cancel_read_jpeg(context->codec_context);
+        break;
+    case OKGF_IMAGE_PNG:
+        okgf_cancel_read_png(context->codec_context);
+        break;
+    case OKGF_IMAGE_INDEXED_PSD:
+    case OKGF_IMAGE_GRAYSCALE_PSD:
+    case OKGF_IMAGE_RGB_PSD:
+    case OKGF_IMAGE_CMYK_PSD:
+        okgf_cancel_read_psd(context->codec_context);
+        break;
+    default:
+        break;
+    }
+    if (context->owns_source)
+        free((void *)context->source_data);
+    free(context);
 }
 int32_t OKGF_CALL OKGF_ReadPal(OkgfReadContext *context, void *pixels, int32_t pitch_bytes,
                                void *palette_rgba) {
@@ -122,7 +149,7 @@ int32_t OKGF_CALL OKGF_ReadPal(OkgfReadContext *context, void *pixels, int32_t p
              context->image_kind == OKGF_IMAGE_INDEXED_PSD)
         success = OKGF_Read_PSDPAL(context->codec_context, pixels, pitch_bytes, palette_rgba);
     else
-        return 0;
+        return finish_read(context, 0);
     return finish_read(context, success);
 }
 
@@ -132,7 +159,7 @@ int32_t OKGF_CALL OKGF_Read(OkgfReadContext *context, void *pixels, int32_t pitc
     int32_t width = context->width, height = context->height;
     if (width <= 0 || height <= 0 || bytes_per_pixel < 1 || bytes_per_pixel > 4 ||
         (uint64_t)(uint32_t)pitch_bytes < (uint64_t)(uint32_t)width * (uint32_t)bytes_per_pixel)
-        return 0;
+        return finish_read(context, 0);
     OkgfImageKind kind = context->image_kind;
     if (kind == OKGF_IMAGE_PNG)
         return finish_read(context,
@@ -146,19 +173,32 @@ int32_t OKGF_CALL OKGF_Read(OkgfReadContext *context, void *pixels, int32_t pitc
         (kind == OKGF_IMAGE_CMYK_PSD && direct_rgb && alpha_mask == 0xff000000))
         return finish_read(context, OKGF_Read_PSD(context->codec_context, pixels, pitch_bytes));
     if (kind == OKGF_IMAGE_JPEG && ((OkgfJpegReadContext *)context->codec_context)->channels != 3)
-        return 0; /* The outer reader expects RGB JPEG output. */
+        return finish_read(context, 0); /* The outer reader expects RGB JPEG output. */
     int indexed = kind == OKGF_IMAGE_INDEXED_BMP || kind == OKGF_IMAGE_GRAYSCALE_PSD ||
                   kind == OKGF_IMAGE_INDEXED_PSD;
     int channels = indexed ? 1 : kind == OKGF_IMAGE_CMYK_PSD ? 4 : 3;
     if ((size_t)width > SIZE_MAX / (size_t)height / (unsigned)channels ||
         width > INT32_MAX / channels)
-        return 0;
+        return finish_read(context, 0);
+    /* PSD palettes need 1024 bytes. BMP accepts larger counts, so check their source extent
+     * and allocate enough RGB entries instead of overflowing the usual stack palette. */
+    uint8_t palette_storage[1024], *palette = palette_storage;
+    if (kind == OKGF_IMAGE_INDEXED_BMP) {
+        const OkgfBmpReadContext *bmp = context->codec_context;
+        int32_t count = bmp->palette_count;
+        if (count <= 0 || (int64_t)count * 4 > (int64_t)bmp->source_size - 54)
+            return finish_read(context, 0);
+        size_t bytes = (size_t)count * 3;
+        if (bytes > sizeof(palette_storage)) {
+            palette = malloc(bytes);
+            if (!palette)
+                return finish_read(context, 0);
+        }
+    }
     uint8_t *decoded = malloc((size_t)width * height * channels);
-    /* PSD palettes need 1024 bytes; the original 768-byte allocation was too small. */
-    uint8_t palette[1024];
-    if (!decoded)
-        return 0;
     int32_t success = 0;
+    if (!decoded)
+        goto done;
     switch (kind) {
     case OKGF_IMAGE_BMP:
         success = OKGF_Read_BMP(context->codec_context, decoded, width * channels);
@@ -178,15 +218,12 @@ int32_t OKGF_CALL OKGF_Read(OkgfReadContext *context, void *pixels, int32_t pitc
         break;
     case OKGF_IMAGE_INDEXED_PSD:
         success = OKGF_Read_PSDPAL(context->codec_context, pixels, pitch_bytes, palette);
-        free(decoded);
-        return finish_read(context, success);
+        goto done;
     default:
         break;
     }
-    if (!success) {
-        free(decoded);
-        return 0;
-    }
+    if (!success)
+        goto done;
     const uint32_t masks[4] = {red_mask, green_mask, blue_mask, alpha_mask};
     unsigned left[4], right[4];
     for (int channel = 0; channel < 4; ++channel)
@@ -204,6 +241,9 @@ int32_t OKGF_CALL OKGF_Read(OkgfReadContext *context, void *pixels, int32_t pitc
                 *dest++ = (uint8_t)(value >> (8 * byte));
         }
     }
+done:
     free(decoded);
-    return finish_read(context, 1);
+    if (palette != palette_storage)
+        free(palette);
+    return finish_read(context, success);
 }

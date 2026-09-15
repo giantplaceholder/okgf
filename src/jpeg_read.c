@@ -24,7 +24,9 @@ static void ignore_message(j_common_ptr jpeg) {
     (void)jpeg;
 }
 
-static void destroy(OkgfJpegReadContext *context) {
+void OKGF_CALL okgf_cancel_read_jpeg(OkgfJpegReadContext *context) {
+    if (!context)
+        return;
     JpegState *state = context->decoder;
     if (state) {
         jpeg_destroy_decompress(&state->jpeg);
@@ -53,7 +55,7 @@ OkgfJpegReadContext *OKGF_CALL OKGR_ReadStart_JPEG_Buf(const uint8_t *source, in
     state->error.error_exit = fail;
     state->error.output_message = ignore_message;
     if (setjmp(state->failure)) {
-        destroy(context);
+        okgf_cancel_read_jpeg(context);
         return NULL;
     }
     jpeg_create_decompress(&state->jpeg);
@@ -78,6 +80,6 @@ int32_t OKGF_CALL OKGF_Read_JPEG(OkgfJpegReadContext *context, void *pixels, int
             return 0;
     }
     jpeg_finish_decompress(&state->jpeg);
-    destroy(context);
+    okgf_cancel_read_jpeg(context);
     return 1;
 }

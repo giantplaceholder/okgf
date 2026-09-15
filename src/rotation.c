@@ -10,10 +10,8 @@ _Static_assert(sizeof(OkgfRotationScanline) == 32, "Rotation scanline layout mus
  * Preserve both downward rounding and the accumulator's wrap at sample 32768. */
 static int32_t sample_step(int32_t step, int32_t sample) {
     int64_t product = (int64_t)step * okgf_signed32((uint32_t)sample << 16);
-    int64_t result = product / INT64_C(4294967296);
-    if (product < 0 && product % INT64_C(4294967296))
-        --result;
-    return (int32_t)result;
+    /* Original: 0x10062A02..0x10062A0E. IMUL returns the signed high word in EDX. */
+    return okgf_signed32((uint32_t)((uint64_t)product >> 32));
 }
 
 void OKGF_CALL OKGR_RotateBuf_Free(OkgfRotationBuffer *buffer) {
