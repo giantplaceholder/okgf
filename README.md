@@ -4,8 +4,10 @@ A C reimplementation of `okgf.dll` for Space Rangers HD and Space Rangers 1.
 Implements the functions used by the latest HD build and all 119 SR1 graphics
 and image imports. AVI playback and zlib exports are outside the scope.
 
-Original DLL SHA-256:
-`0ca91f482e1490bcf71da0672d1a72604a591f1b415dbc4c4f329f176eea5d55`
+Original DLL SHA-256 hashes:
+
+- Space Rangers 2 HD: `0ca91f482e1490bcf71da0672d1a72604a591f1b415dbc4c4f329f176eea5d55`
+- Space Rangers 1: `73cd34012716a2c754a1d44314dfb9b56ce863ef2915c1b176c5965d04e6bd91`
 
 Source comments use virtual addresses at image base `0x10000000`; unqualified
 original addresses refer to the HD DLL.
