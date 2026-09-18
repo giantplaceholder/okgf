@@ -121,6 +121,20 @@ static RescaleContributions *contributions(RescaleMath *m, int32_t dest_size, in
     fp_set(m->a, dest_size);
     fp_div_d(m->a, m->a, source_size);
     double scale = fp_double(m->a), radius = support, inverse = 1;
+#if OKGF_GAME_RELEASE == OKGF_GAME_SR1
+    /* SR1's compiler hoists reciprocals and multiplies by them. Preserve each
+     * binary64 spill: division by scale is observably different at tap edges. */
+    fp_set(m->a, 1);
+    fp_div_d(m->a, m->a, scale);
+    inverse = fp_double(m->a);
+    if (scale < 1) {
+        fp_mul_d(m->a, m->a, support);
+        radius = fp_double(m->a);
+    }
+    fp_set(m->a, 1);
+    fp_div_d(m->a, m->a, inverse);
+    double weight_scale = fp_double(m->a);
+#else
     if (scale < 1) {
         fp_set(m->a, support);
         fp_div_d(m->a, m->a, scale);
@@ -129,13 +143,18 @@ static RescaleContributions *contributions(RescaleMath *m, int32_t dest_size, in
         fp_div_d(m->a, m->a, scale);
         inverse = fp_double(m->a);
     }
+#endif
     RescaleContributions *rows = calloc((size_t)dest_size, sizeof(*rows));
     if (!rows)
         return NULL;
     size_t total = 0;
     for (int32_t i = 0; i < dest_size; ++i) {
         fp_set(m->a, i);
+#if OKGF_GAME_RELEASE == OKGF_GAME_SR1
+        fp_mul_d(m->a, m->a, inverse);
+#else
         fp_div_d(m->a, m->a, scale);
+#endif
         double center = fp_double(m->a);
         /* FST saves center but leaves its extended value for the left bound. */
         fp_sub_d(m->a, m->a, radius);
@@ -180,11 +199,21 @@ static RescaleContributions *contributions(RescaleMath *m, int32_t dest_size, in
                 goto failure;
             fp_set(m->a, center);
             fp_sub_d(m->a, m->a, j);
-            if (scale < 1)
+            if (scale < 1) {
+#if OKGF_GAME_RELEASE == OKGF_GAME_SR1
+                fp_mul_d(m->a, m->a, weight_scale);
+#else
                 fp_div_d(m->a, m->a, inverse);
+#endif
+            }
             kernel(m, filter, fp_double(m->a));
-            if (scale < 1)
+            if (scale < 1) {
+#if OKGF_GAME_RELEASE == OKGF_GAME_SR1
+                fp_mul_d(m->a, m->a, weight_scale);
+#else
                 fp_div_d(m->a, m->a, inverse);
+#endif
+            }
             double weight = fp_double(m->a);
             RescaleTap *tap = &rows[i].taps[j - first];
             tap->source_index = (int32_t)index;

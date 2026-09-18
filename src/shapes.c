@@ -106,7 +106,8 @@ static void filled(OKGF_CIRCLE_ARGS, uint16_t color, const OkgfRect *clip, int b
 CIRCLE_VARIANT(BYTE, uint8_t, 1)
 CIRCLE_VARIANT(WORD, uint16_t, 2)
 
-static void trapezium(OKGF_TRAPEZIUM_ARGS, uint32_t color, const OkgfRect *clip, int mode) {
+static void trapezium(OKGF_TRAPEZIUM_ARGS, uint32_t color, const OkgfRect *clip, int mode,
+                      int is555) {
     OkgfRect bounds;
     memcpy(&bounds, clip, sizeof(bounds));
     if (top_y >= bounds.bottom || bottom_y < bounds.top || top_y > bottom_y)
@@ -125,7 +126,8 @@ static void trapezium(OKGF_TRAPEZIUM_ARGS, uint32_t color, const OkgfRect *clip,
     int64_t left_error = 0, right_error = 0, left = top_left, right = top_right;
     int bytes = mode == 0 ? 4 : 2;
     uint16_t contribution =
-        (uint16_t)((color >> (mode == 64 ? 2 : 1)) & (mode == 64 ? 0x39e7 : 0x7bef));
+        (uint16_t)((color >> (mode == 64 ? 2 : 1)) &
+                   (mode == 64 ? (is555 ? 0x1ce7 : 0x39e7) : (is555 ? 0x3def : 0x7bef)));
     for (int64_t y = top_y; y <= bottom_y && y < bounds.bottom; ++y) {
         if (y >= bounds.top && left < bounds.right && right >= bounds.left) {
             int64_t first = left < bounds.left ? bounds.left : left;
@@ -135,8 +137,9 @@ static void trapezium(OKGF_TRAPEZIUM_ARGS, uint32_t color, const OkgfRect *clip,
                 uint32_t value = color;
                 if (mode) {
                     uint16_t old = (uint16_t)(p[0] | (uint16_t)p[1] << 8);
-                    value = mode == 64 ? contribution + old - ((old >> 2) & 0x39e7)
-                                       : contribution + ((old >> 1) & 0x7bef);
+                    value = mode == 64
+                                ? contribution + old - ((old >> 2) & (is555 ? 0x1ce7 : 0x39e7))
+                                : contribution + ((old >> 1) & (is555 ? 0x3def : 0x7bef));
                 }
                 store(p, value, bytes);
             }
@@ -159,12 +162,20 @@ static void trapezium(OKGF_TRAPEZIUM_ARGS, uint32_t color, const OkgfRect *clip,
 #define TRAPEZIUM_VALUES                                                                           \
     pixels, pitch, top_left, top_right, top_y, bottom_left, bottom_right, bottom_y
 void OKGF_CALL OKGR_Alpha64Trapezium_16(OKGF_TRAPEZIUM_ARGS, uint16_t color, const OkgfRect *clip) {
-    trapezium(TRAPEZIUM_VALUES, color, clip, 64);
+    trapezium(TRAPEZIUM_VALUES, color, clip, 64, 0);
 }
 void OKGF_CALL OKGR_Alpha128Trapezium_16(OKGF_TRAPEZIUM_ARGS, uint16_t color,
                                          const OkgfRect *clip) {
-    trapezium(TRAPEZIUM_VALUES, color, clip, 128);
+    trapezium(TRAPEZIUM_VALUES, color, clip, 128, 0);
 }
 void OKGF_CALL OKGR_FillTrapezium_DWORD(OKGF_TRAPEZIUM_ARGS, uint32_t color, const OkgfRect *clip) {
-    trapezium(TRAPEZIUM_VALUES, color, clip, 0);
+    trapezium(TRAPEZIUM_VALUES, color, clip, 0, 0);
+}
+
+void OKGF_CALL OKGR_Alpha64Trapezium_15(OKGF_TRAPEZIUM_ARGS, uint16_t color, const OkgfRect *clip) {
+    trapezium(TRAPEZIUM_VALUES, color, clip, 64, 1);
+}
+void OKGF_CALL OKGR_Alpha128Trapezium_15(OKGF_TRAPEZIUM_ARGS, uint16_t color,
+                                         const OkgfRect *clip) {
+    trapezium(TRAPEZIUM_VALUES, color, clip, 128, 1);
 }

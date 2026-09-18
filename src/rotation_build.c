@@ -11,12 +11,14 @@ static const OkgfCoefficient rotation_trig[3][256][2] = {
 };
 #endif
 
+#if OKGF_GAME_RELEASE != OKGF_GAME_SR1
 static int32_t round_source(double value) {
     /* A 24-bit multiply can round INT32_MAX to 2^31. Convert to int64_t, then interpret the low 32
      * bits as signed. */
     int32_t integer = okgf_signed32((uint32_t)(int64_t)value);
     return okgf_add32(integer, value - integer >= 0.5);
 }
+#endif
 
 void OKGF_CALL okgf_rotation_edge(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t *dest_x,
                                   int32_t sx0, int32_t sy0, int32_t sx1, int32_t sy1,
@@ -33,10 +35,19 @@ void OKGF_CALL okgf_rotation_edge(int32_t x0, int32_t y0, int32_t x1, int32_t y1
         memcpy((void *)dest_x++, &dx, sizeof(dx));
         OkgfEdgeFloat source_x = okgf_multiply_integer(fraction, okgf_sub32(sx1, sx0));
         int32_t integer = okgf_truncate64(source_x, 0);
+#if OKGF_GAME_RELEASE == OKGF_GAME_SR1
+        /* SR1 FST keeps the extended product for FISTP. HD reloads its double
+         * copy before truncating Y; negative near-integers can differ by one. */
+        OkgfEdgeFloat source_y = okgf_multiply_integer(fraction, okgf_sub32(sy1, sy0));
+        int32_t iy = okgf_truncate64(source_y, 0);
+        int32_t rounded_y = okgf_add32(iy, okgf_store_double(source_y) - iy >= 0.5);
+#else
+        int32_t rounded_y =
+            round_source(okgf_store_double(okgf_multiply_integer(fraction, okgf_sub32(sy1, sy0))));
+#endif
         int32_t pair[2] = {
             okgf_add32(okgf_add32(sx0, integer), okgf_store_double(source_x) - integer >= 0.5),
-            okgf_add32(sy0, round_source(okgf_store_double(
-                                okgf_multiply_integer(fraction, okgf_sub32(sy1, sy0)))))};
+            okgf_add32(sy0, rounded_y)};
         memcpy(coordinates, pair, sizeof(pair));
         coordinates += sizeof(OkgfRotationScanline);
     }

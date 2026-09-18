@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 project(okgf VERSION 0.1.0 LANGUAGES C)
+set(OKGF_GAME_RELEASE "SRHD" CACHE STRING "Original game behavior: SRHD or SR1")
+set_property(CACHE OKGF_GAME_RELEASE PROPERTY STRINGS SRHD SR1)
+if(NOT OKGF_GAME_RELEASE MATCHES "^(SRHD|SR1)$")
+  message(FATAL_ERROR "OKGF_GAME_RELEASE must be SRHD or SR1")
+endif()
 set(OKGF_MATH_BACKEND "COMPATIBLE" CACHE STRING "Numerical implementation: COMPATIBLE, EXACT, or NATIVE")
 set_property(CACHE OKGF_MATH_BACKEND PROPERTY STRINGS COMPATIBLE EXACT NATIVE)
 if(NOT OKGF_MATH_BACKEND MATCHES "^(COMPATIBLE|EXACT|NATIVE)$")
@@ -49,6 +54,7 @@ add_library(okgf SHARED
   src/image_read.c
   src/platform.c
 )
+target_compile_definitions(okgf PUBLIC OKGF_GAME_RELEASE=OKGF_GAME_${OKGF_GAME_RELEASE})
 if(WIN32)
   set_target_properties(okgf PROPERTIES PREFIX "")
   target_sources(okgf PRIVATE src/platform_win32.c)

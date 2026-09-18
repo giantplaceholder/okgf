@@ -7,7 +7,7 @@ static const uint8_t cosine_light64[4096] = {
 #include "tables/planet_light_table.inc"
 };
 
-static void draw(OKGF_PLANET_ARGS, const OkgfRect *clip, int variant, int pixel_bytes) {
+static void draw(OKGF_PLANET_ARGS, const OkgfRect *clip, int variant, int pixel_bytes, int is555) {
     OkgfRect bounds;
     if (clip) {
         memcpy(&bounds, clip, sizeof(bounds));
@@ -66,7 +66,8 @@ static void draw(OKGF_PLANET_ARGS, const OkgfRect *clip, int variant, int pixel_
                 pixel[3] = edge ? (uint8_t)(alpha * 4) : variant == 4 ? texel[1] : 255;
             } else {
                 if (edge || variant == 4)
-                    color = okgf_blend565_truncated(color, okgf_load16(pixel), alpha);
+                    color = is555 ? okgf_blend555_truncated(color, okgf_load16(pixel), alpha)
+                                  : okgf_blend565_truncated(color, okgf_load16(pixel), alpha);
                 pixel[0] = (uint8_t)color;
                 pixel[1] = (uint8_t)(color >> 8);
             }
@@ -79,14 +80,21 @@ static void draw(OKGF_PLANET_ARGS, const OkgfRect *clip, int variant, int pixel_
         light, light_palette, dest_x, dest_y
 #define PLANET_VARIANT(n)                                                                          \
     void OKGF_CALL OKGR_Planet##n##_DrawAndLight_32(OKGF_PLANET_ARGS) {                            \
-        draw(DRAW_ARGS, NULL, n, 4);                                                               \
+        draw(DRAW_ARGS, NULL, n, 4, 0);                                                            \
     }                                                                                              \
     void OKGF_CALL OKGR_Planet##n##_DrawAndLight_16(OKGF_PLANET_ARGS) {                            \
-        draw(DRAW_ARGS, NULL, n, 2);                                                               \
+        draw(DRAW_ARGS, NULL, n, 2, 0);                                                            \
     }                                                                                              \
     void OKGF_CALL OKGR_Planet##n##_DrawAndLightClip_16(OKGF_PLANET_ARGS, const OkgfRect *clip) {  \
-        draw(DRAW_ARGS, clip, n, 2);                                                               \
+        draw(DRAW_ARGS, clip, n, 2, 0);                                                            \
     }
 PLANET_VARIANT(2)
 PLANET_VARIANT(3)
 PLANET_VARIANT(4)
+
+void OKGF_CALL OKGR_Planet2_DrawAndLightClip_15(OKGF_PLANET_ARGS, const OkgfRect *clip) {
+    draw(DRAW_ARGS, clip, 2, 2, 1);
+}
+void OKGF_CALL OKGR_Planet3_DrawAndLightClip_15(OKGF_PLANET_ARGS, const OkgfRect *clip) {
+    draw(DRAW_ARGS, clip, 3, 2, 1);
+}

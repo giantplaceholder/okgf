@@ -5,7 +5,7 @@
 #define RECT_FORWARD                                                                               \
     dest, dest_pitch, dest_x, dest_y, source, source_pitch, source_x, source_y, width, height
 
-enum CopyMode { COPY_WORD, COPY_BED, COPY_TRANSPARENT, COPY_HALF };
+enum CopyMode { COPY_WORD, COPY_BED, COPY_TRANSPARENT, COPY_HALF, COPY_HALF555 };
 
 /* Load the complete group before storing so overlapping copies follow the original instruction
  * order. */
@@ -94,8 +94,10 @@ static void copy_rect(OKGF_RECT_ARGS, enum CopyMode mode, uint16_t key) {
             uint16_t v = okgf_load16(s + 2 * x);
             if (mode == COPY_TRANSPARENT && v == key)
                 continue;
-            if (mode == COPY_HALF)
-                v = (uint16_t)(((v & 0xF7DEu) >> 1) + ((okgf_load16(d + 2 * x) & 0xF7DEu) >> 1));
+            if (mode == COPY_HALF || mode == COPY_HALF555) {
+                unsigned mask = mode == COPY_HALF555 ? 0x7bde : 0xf7de;
+                v = (uint16_t)(((v & mask) >> 1) + ((okgf_load16(d + 2 * x) & mask) >> 1));
+            }
             okgf_store16(d + 2 * x, v);
         }
         s += source_pitch;
@@ -260,4 +262,8 @@ void OKGF_CALL OKGR_CopySingleBuf_XY_XY_WORD_MMX(void *pixels, int32_t pitch, in
         s += row_skip;
         d += row_skip;
     }
+}
+
+void OKGF_CALL OKGR_HACopy_XY_XY_15(OKGF_RECT_ARGS) {
+    copy_rect(RECT_FORWARD, COPY_HALF555, 0);
 }

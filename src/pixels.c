@@ -31,7 +31,7 @@ void OKGF_CALL okgf_convert_rgb_to555(const void *s, void *d, int32_t p, int32_t
 /* Original converters: 0x1005B610..0x1005B923.
  * Zero-fill low color bits; never replicate bits. */
 static void expand(const void *source, int32_t sp, void *dest, int32_t dp, int32_t w, int32_t h,
-                   int bgr, int alpha, int source_alpha) {
+                   int bgr, int alpha, int source_alpha, int is555) {
     const uint8_t *s = source;
     uint8_t *d = dest;
     const int ss = source_alpha ? 3 : 2, ds = alpha ? 4 : 3;
@@ -39,8 +39,8 @@ static void expand(const void *source, int32_t sp, void *dest, int32_t dp, int32
         for (int32_t x = 0; x < w; ++x) {
             uint16_t v = okgf_load16(s + ss * x);
             uint8_t *p = d + ds * x;
-            p[bgr ? 2 : 0] = (uint8_t)((v >> 8) & 248);
-            p[1] = (uint8_t)((v >> 3) & 252);
+            p[bgr ? 2 : 0] = (uint8_t)((v >> (is555 ? 7 : 8)) & 248);
+            p[1] = (uint8_t)((v >> (is555 ? 2 : 3)) & (is555 ? 248 : 252));
             p[bgr ? 0 : 2] = (uint8_t)(v << 3);
             if (alpha)
                 p[3] = source_alpha ? s[ss * x + 2] : 255;
@@ -49,20 +49,24 @@ static void expand(const void *source, int32_t sp, void *dest, int32_t dp, int32
         d += dp;
     }
 }
-#define EXPAND(name, bgr, alpha, sa)                                                               \
+#define EXPAND(name, bgr, alpha, sa, is555)                                                        \
     void OKGF_CALL name(const void *s, int32_t sp, void *d, int32_t dp, int32_t w, int32_t h) {    \
-        expand(s, sp, d, dp, w, h, bgr, alpha, sa);                                                \
+        expand(s, sp, d, dp, w, h, bgr, alpha, sa, is555);                                         \
     }
-EXPAND(OKGF_Convert565toRGB, 0, 0, 0)
-EXPAND(OKGF_Convert565toBGR, 1, 0, 0)
-EXPAND(OKGF_Convert565toRGBA, 0, 1, 0)
-EXPAND(OKGF_Convert565toBGRA, 1, 1, 0)
-EXPAND(OKGF_Convert5658toRGBA, 0, 1, 1)
-EXPAND(OKGF_Convert5658toBGRA, 1, 1, 1)
+EXPAND(OKGF_Convert565toRGB, 0, 0, 0, 0)
+EXPAND(OKGF_Convert565toBGR, 1, 0, 0, 0)
+EXPAND(OKGF_Convert565toRGBA, 0, 1, 0, 0)
+EXPAND(OKGF_Convert565toBGRA, 1, 1, 0, 0)
+EXPAND(OKGF_Convert5658toRGBA, 0, 1, 1, 0)
+EXPAND(OKGF_Convert5658toBGRA, 1, 1, 1, 0)
+EXPAND(OKGF_Convert555toRGB, 0, 0, 0, 1)
+EXPAND(OKGF_Convert555toBGR, 1, 0, 0, 1)
+EXPAND(OKGF_Convert555toBGRA, 1, 1, 0, 1)
+EXPAND(OKGF_Convert5558toBGRA, 1, 1, 1, 1)
 
 #define RECT_FORWARD                                                                               \
     dest, dest_pitch, dest_x, dest_y, source, source_pitch, source_x, source_y, width, height
-static void convert_rect(OKGF_RECT_ARGS, int source_bpp, int dest_bpp) {
+static void convert_rect(OKGF_RECT_ARGS, int source_bpp, int dest_bpp, int is555) {
     const uint8_t *s =
         (const uint8_t *)source + (ptrdiff_t)source_pitch * source_y + source_bpp * source_x;
     uint8_t *d = (uint8_t *)dest + (ptrdiff_t)dest_pitch * dest_y + dest_bpp * dest_x;
@@ -70,7 +74,10 @@ static void convert_rect(OKGF_RECT_ARGS, int source_bpp, int dest_bpp) {
         for (int32_t x = 0; x < width; ++x) {
             const uint8_t *p = s + source_bpp * x;
             if (dest_bpp == 2)
-                okgf_store16(d + 2 * x, rgb565(p));
+                okgf_store16(d + 2 * x, source_bpp == 2 ? okgf_565_to555(okgf_load16(p))
+                                        : is555         ? (uint16_t)((p[0] & 248u) << 7 |
+                                                                     (p[1] & 248u) << 2 | p[2] >> 3)
+                                                        : rgb565(p));
             else {
                 d[3 * x] = p[0];
                 d[3 * x + 1] = p[1];
@@ -82,13 +89,13 @@ static void convert_rect(OKGF_RECT_ARGS, int source_bpp, int dest_bpp) {
     }
 }
 void OKGF_CALL OKGF_Convert_888to565(OKGF_RECT_ARGS) {
-    convert_rect(RECT_FORWARD, 3, 2);
+    convert_rect(RECT_FORWARD, 3, 2, 0);
 }
 void OKGF_CALL OKGF_Convert_8888to565(OKGF_RECT_ARGS) {
-    convert_rect(RECT_FORWARD, 4, 2);
+    convert_rect(RECT_FORWARD, 4, 2, 0);
 }
 void OKGF_CALL OKGF_Convert_RGBAtoRGB(OKGF_RECT_ARGS) {
-    convert_rect(RECT_FORWARD, 4, 3);
+    convert_rect(RECT_FORWARD, 4, 3, 0);
 }
 
 void OKGF_CALL OKGR_Fill_WORD(void *pixels, int32_t pitch, int32_t width, int32_t height,
@@ -97,4 +104,14 @@ void OKGF_CALL OKGR_Fill_WORD(void *pixels, int32_t pitch, int32_t width, int32_
     for (int32_t y = 0; y < height; ++y, d += pitch)
         for (int32_t x = 0; x < width; ++x)
             okgf_store16(d + 2 * x, color);
+}
+
+void OKGF_CALL OKGF_ConvertRGBto555(const void *s, void *d, int32_t p, int32_t w, int32_t h) {
+    pack_rgb(s, d, p, w, h, 1);
+}
+void OKGF_CALL OKGF_Convert_8888to555(OKGF_RECT_ARGS) {
+    convert_rect(RECT_FORWARD, 4, 2, 1);
+}
+void OKGF_CALL OKGF_Convert_565to555(OKGF_RECT_ARGS) {
+    convert_rect(RECT_FORWARD, 2, 2, 1);
 }

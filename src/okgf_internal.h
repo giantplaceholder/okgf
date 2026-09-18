@@ -53,6 +53,29 @@ static inline unsigned okgf_scale63_rounded(unsigned channel, unsigned factor) {
     return (channel * factor + 31) / 63;
 }
 
+static inline unsigned okgf_scale31_rounded(unsigned channel, unsigned factor) {
+    return (channel * factor + 15) / 31;
+}
+
+static inline uint16_t okgf_blend555_truncated(uint16_t source, uint16_t dest, unsigned alpha) {
+    unsigned r = okgf_scale63_truncated((source >> 10) & 31, alpha) +
+                 okgf_scale63_truncated((dest >> 10) & 31, 63 - alpha);
+    unsigned g = okgf_scale63_truncated((source >> 5) & 31, alpha) +
+                 okgf_scale63_truncated((dest >> 5) & 31, 63 - alpha);
+    unsigned b =
+        okgf_scale63_truncated(source & 31, alpha) + okgf_scale63_truncated(dest & 31, 63 - alpha);
+    return (uint16_t)(r << 10 | g << 5 | b);
+}
+
+static inline uint16_t okgf_shift_mask555(unsigned shift) {
+    static const uint16_t masks[] = {0xFFFF, 0x3DEF, 0x1CE7, 0x0C63, 0x0421};
+    return shift < 5 ? masks[shift] : 0;
+}
+
+static inline uint16_t okgf_565_to555(uint16_t color) {
+    return (uint16_t)((color & 31) | ((color >> 1) & 0x7fe0));
+}
+
 /* Table contributions can darken pixels even at alpha 0 or 63. Callers apply any
  * transparent/opaque shortcuts; planet edges always use the tables. */
 static inline uint16_t okgf_blend565_truncated(uint16_t source, uint16_t dest, unsigned alpha) {

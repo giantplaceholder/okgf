@@ -2,7 +2,7 @@
 #include "okgf_internal.h"
 #include <stddef.h>
 
-static void alpha_rect(OKGF_RECT_ARGS, const void *palette) {
+static void alpha_rect(OKGF_RECT_ARGS, const void *palette, int is555) {
     int bpp = palette ? 1 : 4;
     const uint8_t *src =
         (const uint8_t *)source + (ptrdiff_t)source_y * source_pitch + (ptrdiff_t)source_x * bpp;
@@ -13,10 +13,13 @@ static void alpha_rect(OKGF_RECT_ARGS, const void *palette) {
             unsigned a = p[3] >> 2;
             if (!a)
                 continue;
-            unsigned r = p[palette ? 0 : 2] >> 3, b = p[palette ? 2 : 0] >> 3, g = p[1] >> 2;
-            uint16_t color = (uint16_t)(r << 11 | g << 5 | b);
+            unsigned r = p[palette ? 0 : 2] >> 3, b = p[palette ? 2 : 0] >> 3,
+                     g = p[1] >> (is555 ? 3 : 2);
+            uint16_t color = (uint16_t)(r << (is555 ? 10 : 11) | g << 5 | b);
             if (a >= 62)
                 okgf_store16(dst + 2 * x, color);
+            else if (is555)
+                OKGR_PixelAlpha_15(dst + 2 * x, color, p[3]);
             else
                 OKGR_PixelAlpha_16(dst + 2 * x, color, p[3]);
         }
@@ -27,10 +30,10 @@ static void alpha_rect(OKGF_RECT_ARGS, const void *palette) {
 #define RECT_PASS                                                                                  \
     dest, dest_pitch, dest_x, dest_y, source, source_pitch, source_x, source_y, width, height
 void OKGF_CALL OKGR_AlphaSimpleBuf_Draw_16(OKGF_RECT_ARGS) {
-    alpha_rect(RECT_PASS, NULL);
+    alpha_rect(RECT_PASS, NULL, 0);
 }
 void OKGF_CALL OKGR_AlphaSimpleBufPalAlpha_Draw_16(OKGF_RECT_ARGS, const void *palette) {
-    alpha_rect(RECT_PASS, palette);
+    alpha_rect(RECT_PASS, palette, 0);
 }
 
 /* Use alpha tables generated at 53-bit startup precision. Their truncation differs between the
@@ -43,4 +46,15 @@ void OKGF_CALL OKGR_PixelAlpha_16(void *pixel, uint16_t color, uint8_t alpha) {
         return;
     }
     okgf_store16(p, okgf_blend565_truncated(color, okgf_load16(p), a));
+}
+
+void OKGF_CALL OKGR_AlphaSimpleBuf_Draw_15(OKGF_RECT_ARGS) {
+    alpha_rect(RECT_PASS, NULL, 1);
+}
+void OKGF_CALL OKGR_AlphaSimpleBufPalAlpha_Draw_15(OKGF_RECT_ARGS, const void *palette) {
+    alpha_rect(RECT_PASS, palette, 1);
+}
+void OKGF_CALL OKGR_PixelAlpha_15(void *pixel, uint16_t color, uint8_t alpha) {
+    unsigned a = alpha >> 2;
+    okgf_store16(pixel, a == 63 ? color : okgf_blend555_truncated(color, okgf_load16(pixel), a));
 }

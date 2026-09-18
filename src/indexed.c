@@ -29,7 +29,18 @@ static uint32_t expand_bgra(uint16_t color, unsigned alpha, int unpremultiply) {
            (uint32_t)(uint8_t)alpha << 24;
 }
 
-enum IndexedMode { COPY_WORD, COPY_ALPHA, COPY_BGRA, PREMULT_WORD, PREMULT_ALPHA, PREMULT_BGRA };
+enum IndexedMode {
+    COPY_WORD,
+    COPY_ALPHA,
+    COPY_BGRA,
+    PREMULT_WORD,
+    PREMULT_ALPHA,
+    PREMULT_BGRA,
+    PREMULT_555,
+    COPY_PACKED,
+    PREMULT_PACKED565,
+    PREMULT_PACKED555
+};
 
 typedef struct IndexedPalette {
     const uint8_t *entries;
@@ -42,6 +53,13 @@ static void literal_run(uint8_t *dest, const uint8_t *indices, int count,
                         const IndexedPalette *palette) {
     for (int i = 0; i < count; ++i) {
         unsigned index = indices[i];
+        if (palette->mode >= COPY_PACKED) {
+            uint32_t value = palette->bgra[index];
+            okgf_store16(dest, (uint16_t)value);
+            dest[2] = (uint8_t)(value >> 16);
+            dest += 3;
+            continue;
+        }
         if (palette->mode == COPY_BGRA || palette->mode == PREMULT_BGRA) {
             okgf_store32(dest, palette->bgra[index]);
             dest += 4;
@@ -59,6 +77,11 @@ static void literal_run(uint8_t *dest, const uint8_t *indices, int count,
             if (palette->mode == PREMULT_ALPHA) {
                 unsigned back = 63 - okgf_scale63_rounded(63 - inverse_alpha, palette->opacity);
                 color = blend565((uint16_t)entry, old, palette->opacity, back);
+            } else if (palette->mode == PREMULT_555) {
+                unsigned red = okgf_scale63_rounded((old >> 9) & 62, inverse_alpha) >> 1;
+                unsigned green = okgf_scale63_rounded((old >> 4) & 62, inverse_alpha) >> 1;
+                unsigned blue = okgf_scale63_rounded((old & 31) * 2, inverse_alpha) >> 1;
+                color = (uint16_t)(entry + ((red << 10) | (green << 5) | blue));
             } else {
                 unsigned red = okgf_scale63_rounded((old >> 10) & 62, inverse_alpha) & 62;
                 unsigned green = okgf_scale63_rounded((old >> 5) & 63, inverse_alpha);
@@ -77,17 +100,33 @@ static void draw(void *dest, int32_t pitch, const OkgfRleHeader *source, int32_t
     const uint8_t *header = (const uint8_t *)source;
     int32_t width = (int32_t)okgf_load32(header + 4), height = (int32_t)okgf_load32(header + 8);
     unsigned palette_count = header[12] ? header[12] : 256;
-    int premultiplied = mode >= PREMULT_WORD;
-    int output_bpp = mode == COPY_BGRA || mode == PREMULT_BGRA ? 4 : 2;
+    int premultiplied = mode >= PREMULT_WORD && mode != COPY_PACKED;
+    int output_bpp = mode >= COPY_PACKED ? 3 : mode == COPY_BGRA || mode == PREMULT_BGRA ? 4 : 2;
     IndexedPalette palette = {.entries = header + 16, .mode = mode, .opacity = alpha >> 2};
     const uint8_t *commands = palette.entries + (premultiplied ? 4 : 2) * palette_count;
-    if (output_bpp == 4) {
+    if (output_bpp >= 3) {
         /* The converted palette has a fixed maximum size and fits on the stack. */
         for (unsigned i = 0; i < palette_count; ++i) {
             uint32_t entry = premultiplied ? okgf_load32(palette.entries + 4 * i)
                                            : okgf_load16(palette.entries + 2 * i);
             unsigned opacity = premultiplied ? 252 - 4 * (entry >> 16) : 255;
-            palette.bgra[i] = expand_bgra((uint16_t)entry, opacity, premultiplied);
+            if (output_bpp == 3) {
+                int is555 = mode == PREMULT_PACKED555;
+                unsigned b = (entry & 31) << 3;
+                unsigned g = (entry >> (is555 ? 2 : 3)) & (is555 ? 248 : 252);
+                unsigned r = (entry >> (is555 ? 7 : 8)) & 248;
+                if (premultiplied && opacity) {
+                    b = (uint8_t)(b * 255 / opacity);
+                    g = (uint8_t)(g * 255 / opacity);
+                    r = (uint8_t)(r * 255 / opacity);
+                }
+                palette.bgra[i] = mode == COPY_PACKED
+                                      ? (entry & 65535) | (255u << 16)
+                                      : ((r & 248) << (is555 ? 7 : 8)) |
+                                            ((g & (is555 ? 248 : 252)) << (is555 ? 2 : 3)) |
+                                            (b >> 3) | (opacity << 16);
+            } else
+                palette.bgra[i] = expand_bgra((uint16_t)entry, opacity, premultiplied);
         }
     }
     if (!clip || (x >= clip->left && (int64_t)x + width <= clip->right && y >= clip->top &&
@@ -172,4 +211,30 @@ void OKGF_CALL OKGR_AlphaIndexed_AlphaDrawClip_16(OKGF_RLE_CLIP_ARGS) {
 }
 void OKGF_CALL OKGR_AlphaIndexed_AlphaDrawClip_Alpha_16(OKGF_RLE_CLIP_ARGS, uint8_t alpha) {
     draw(dest, pitch, source, x, y, clip, PREMULT_ALPHA, alpha);
+}
+
+void OKGF_CALL OKGR_AlphaIndexed_CopyDraw_5658(OKGF_RLE_ARGS) {
+    draw(dest, pitch, source, 0, 0, NULL, COPY_PACKED, 255);
+}
+void OKGF_CALL OKGR_AlphaIndexed_AlphaDraw_5658(OKGF_RLE_ARGS) {
+    draw(dest, pitch, source, 0, 0, NULL, PREMULT_PACKED565, 255);
+}
+void OKGF_CALL OKGR_AlphaIndexed_AlphaDraw_5558(OKGF_RLE_ARGS) {
+    draw(dest, pitch, source, 0, 0, NULL, PREMULT_PACKED555, 255);
+}
+void OKGF_CALL OKGR_AlphaIndexed_AlphaDrawClip_15(OKGF_RLE_CLIP_ARGS) {
+    draw(dest, pitch, source, x, y, clip, PREMULT_555, 255);
+}
+static void convert_palette(OkgfRleHeader *source, int stride) {
+    uint8_t *s = (uint8_t *)source;
+    unsigned count = s[12] ? s[12] : 256;
+    s += 16;
+    for (unsigned i = 0; i < count; ++i, s += stride)
+        okgf_store16(s, okgf_565_to555(okgf_load16(s)));
+}
+void OKGF_CALL OKGR_AlphaIndexed_Copy16to15(OkgfRleHeader *source) {
+    convert_palette(source, 2);
+}
+void OKGF_CALL OKGR_AlphaIndexed_Alpha16to15(OkgfRleHeader *source) {
+    convert_palette(source, 4);
 }

@@ -17,7 +17,7 @@ static void emit(uint8_t *dest, int32_t *size, uint8_t v) {
     ++*size;
 }
 static int32_t build(const void *source, int32_t pitch, int32_t width, int32_t height, void *dest,
-                     enum BuildMode mode, uint16_t key) {
+                     enum BuildMode mode, uint16_t key, int is555) {
     uint8_t *d = dest;
     const uint8_t *s = source;
     int32_t size = 16;
@@ -51,14 +51,14 @@ static int32_t build(const void *source, int32_t pitch, int32_t width, int32_t h
                         if (mode == KEYED_WORD)
                             v = okgf_load16(p);
                         else {
-                            unsigned r = p[2] >> 3, g = p[1] >> 2, b = p[0] >> 3;
+                            unsigned r = p[2] >> 3, g = p[1] >> (is555 ? 3 : 2), b = p[0] >> 3;
                             if (mode == PREMULT_BGRA) {
                                 unsigned a = p[3] >> 2;
                                 r = okgf_scale63_truncated(r, a);
                                 g = okgf_scale63_truncated(g, a);
                                 b = okgf_scale63_truncated(b, a);
                             }
-                            v = (uint16_t)(r << 11 | g << 5 | b);
+                            v = (uint16_t)(r << (is555 ? 10 : 11) | g << 5 | b);
                         }
                         emit(d, &size, (uint8_t)v);
                         emit(d, &size, (uint8_t)(v >> 8));
@@ -78,19 +78,19 @@ static int32_t build(const void *source, int32_t pitch, int32_t width, int32_t h
 }
 int32_t OKGF_CALL OKGR_TransBuf_Build_WORD(const void *s, int32_t p, int32_t w, int32_t h, void *d,
                                            uint16_t key) {
-    return build(s, p, w, h, d, KEYED_WORD, key);
+    return build(s, p, w, h, d, KEYED_WORD, key, 0);
 }
 int32_t OKGF_CALL OKGR_TransBuf_BuildFromRGBA_16(const void *s, int32_t p, int32_t w, int32_t h,
                                                  void *d) {
-    return build(s, p, w, h, d, OPAQUE_BGRA, 0);
+    return build(s, p, w, h, d, OPAQUE_BGRA, 0, 0);
 }
 int32_t OKGF_CALL OKGR_TransAlphaBuf_BuildFromRGBA_16(const void *s, int32_t p, int32_t w,
                                                       int32_t h, void *d) {
-    return build(s, p, w, h, d, PREMULT_BGRA, 0);
+    return build(s, p, w, h, d, PREMULT_BGRA, 0, 0);
 }
 int32_t OKGF_CALL OKGR_AlphaBuf_BuildFromRGBA(const void *s, int32_t p, int32_t w, int32_t h,
                                               void *d) {
-    return build(s, p, w, h, d, INVERSE_ALPHA, 0);
+    return build(s, p, w, h, d, INVERSE_ALPHA, 0, 0);
 }
 
 enum DrawMode {
@@ -104,16 +104,31 @@ enum DrawMode {
     FILL_ALPHA_WORD,
     FILL_ALPHA_BGRA,
     MASK_WORD,
-    MASK_DWORD
+    MASK_DWORD,
+    HALF_555,
+    SCALE_555,
+    FILL_ALPHA_555,
+    COPY_PACKED,
+    UNPREMULT_PACKED565,
+    UNPREMULT_PACKED555,
+    ALPHA_PACKED
 };
 static int output_size(enum DrawMode mode) {
+    if (mode >= COPY_PACKED)
+        return 3;
     return mode == COPY_BGRA || mode == UNPREMULT_BGRA || mode == ALPHA_BGRA ||
                    mode == FILL_ALPHA_BGRA || mode == MASK_DWORD
                ? 4
                : 2;
 }
 static int input_size(enum DrawMode mode) {
-    return mode >= MASK_WORD ? 0 : mode >= SCALE_WORD ? 1 : 2;
+    if (mode == MASK_WORD || mode == MASK_DWORD)
+        return 0;
+    if (mode == SCALE_555 || mode == FILL_ALPHA_555 || mode == ALPHA_PACKED)
+        return 1;
+    if (mode == HALF_555 || mode >= COPY_PACKED)
+        return 2;
+    return mode >= SCALE_WORD ? 1 : 2;
 }
 static void literal_run(uint8_t *d, const uint8_t *s, int n, enum DrawMode mode, uint32_t color) {
     if (mode == ADD_WORD) {
@@ -136,11 +151,57 @@ static void literal_run(uint8_t *d, const uint8_t *s, int n, enum DrawMode mode,
         return;
     }
     for (int i = 0; i < n; ++i) {
-        if (mode == FILL_ALPHA_WORD) {
+        if (mode == FILL_ALPHA_555) {
+            OKGR_PixelAlpha_15(d, (uint16_t)color, *s++);
+            d += 2;
+        } else if (mode == SCALE_555) {
+            uint16_t v = okgf_load16(d);
+            unsigned a = *s++;
+            /* SR1 uses 0x07e0 for the green index into a 32-entry row:
+             * red bit 10 advances the alpha row. Keep the original mistake. */
+            unsigned r = okgf_scale63_truncated((v >> 10) & 31, a);
+            unsigned g = okgf_scale63_truncated((v >> 5) & 31, a + ((v >> 10) & 1));
+            unsigned b = okgf_scale63_truncated(v & 31, a);
+            okgf_store16(d, (uint16_t)(r << 10 | g << 5 | b));
+            d += 2;
+        } else if (mode == ALPHA_PACKED) {
+            d[2] = (uint8_t)(252 - 4 * (unsigned)*s++);
+            d += 3;
+        } else if (mode == COPY_PACKED) {
+            okgf_store16(d, okgf_load16(s));
+            d[2] = 255;
+            s += 2;
+            d += 3;
+        } else if (mode == UNPREMULT_PACKED565 || mode == UNPREMULT_PACKED555) {
+            int is555 = mode == UNPREMULT_PACKED555;
+            uint16_t v = okgf_load16(s);
+            unsigned b = (v & 31) << 3;
+            unsigned g = (v >> (is555 ? 2 : 3)) & (is555 ? 248 : 252);
+            unsigned r = (v >> (is555 ? 7 : 8)) & 248;
+            if (d[2]) {
+                b = (uint8_t)(b * 255 / d[2]);
+                g = (uint8_t)(g * 255 / d[2]);
+                r = (uint8_t)(r * 255 / d[2]);
+            }
+            okgf_store16(d, (uint16_t)((r & 248) << (is555 ? 7 : 8) |
+                                       (g & (is555 ? 248 : 252)) << (is555 ? 2 : 3) | b >> 3));
+            s += 2;
+            d += 3;
+        } else if (mode == FILL_ALPHA_WORD) {
             OKGR_PixelAlpha_16(d, (uint16_t)color, *s++);
             d += 2;
         } else if (mode == FILL_ALPHA_BGRA) {
+#if OKGF_GAME_RELEASE == OKGF_GAME_SR1
+            unsigned a = *s++;
+            for (unsigned k = 0; k < 3; ++k) {
+                unsigned front = (color >> (8 * k)) & 255;
+                d[k] = (uint8_t)((front * a + 127) / 255 + (d[k] * (255 - a) + 127) / 255);
+            }
+            unsigned opacity = d[3] + a;
+            d[3] = (uint8_t)(opacity > 255 ? 255 : opacity);
+#else
             okgf_store32(d, (color & UINT32_C(0xFFFFFF)) | (uint32_t)*s++ << 24);
+#endif
             d += 4;
         } else if (mode == MASK_WORD) {
             okgf_store16(d, (uint16_t)color);
@@ -165,8 +226,9 @@ static void literal_run(uint8_t *d, const uint8_t *s, int n, enum DrawMode mode,
             if (mode == COPY_WORD) {
                 okgf_store16(d, v);
                 d += 2;
-            } else if (mode == HALF_WORD) {
-                okgf_store16(d, (uint16_t)(((v >> 1) & 0x7BEF) + ((okgf_load16(d) >> 1) & 0x7BEF)));
+            } else if (mode == HALF_WORD || mode == HALF_555) {
+                unsigned mask = mode == HALF_555 ? 0x3def : 0x7bef;
+                okgf_store16(d, (uint16_t)(((v >> 1) & mask) + ((okgf_load16(d) >> 1) & mask)));
                 d += 2;
             } else {
                 unsigned b = (v & 31) << 3, g = (v >> 3) & 252, r = (v >> 8) & 248;
@@ -299,4 +361,36 @@ void OKGF_CALL OKGR_TransBuf_FillAlphaClip_16(OKGF_RLE_CLIP_ARGS, uint16_t color
 }
 void OKGF_CALL OKGR_TransBuf_FillAlphaClip_RGBA(OKGF_RLE_CLIP_ARGS, uint32_t color) {
     draw_clip(dest, pitch, x, y, source, clip, FILL_ALPHA_BGRA, color);
+}
+
+int32_t OKGF_CALL OKGR_TransBuf_BuildFromRGBA_15(const void *s, int32_t p, int32_t w, int32_t h,
+                                                 void *d) {
+    return build(s, p, w, h, d, OPAQUE_BGRA, 0, 1);
+}
+int32_t OKGF_CALL OKGR_TransAlphaBuf_BuildFromRGBA_15(const void *s, int32_t p, int32_t w,
+                                                      int32_t h, void *d) {
+    return build(s, p, w, h, d, PREMULT_BGRA, 0, 1);
+}
+RLE_DRAW(OKGR_TransBuf_Draw_5658, COPY_PACKED)
+RLE_DRAW(OKGR_TransAlphaBuf_Draw_5658, UNPREMULT_PACKED565)
+RLE_DRAW(OKGR_TransAlphaBuf_Draw_5558, UNPREMULT_PACKED555)
+RLE_DRAW(OKGR_AlphaBuf_Draw_5658, ALPHA_PACKED)
+RLE_CLIP(OKGR_TransBuf_HADrawClip_15, HALF_555)
+RLE_CLIP(OKGR_AlphaBuf_DrawClip_15, SCALE_555)
+void OKGF_CALL OKGR_TransBuf_FillAlphaClip_15(OKGF_RLE_CLIP_ARGS, uint16_t color) {
+    draw_clip(dest, pitch, x, y, source, clip, FILL_ALPHA_555, color);
+}
+void OKGF_CALL OKGR_TransBuf_Convert565to555_WORD(OkgfRleHeader *source) {
+    uint8_t *s = (uint8_t *)source + 16;
+    int32_t remaining = (int32_t)okgf_load32((const uint8_t *)source);
+    while (remaining > 0) {
+        unsigned command = *s++;
+        --remaining;
+        if (command > 128) {
+            unsigned count = command & 127;
+            remaining -= 2 * (int32_t)count;
+            for (unsigned i = 0; i < count; ++i, s += 2)
+                okgf_store16(s, okgf_565_to555(okgf_load16(s)));
+        }
+    }
 }

@@ -103,14 +103,14 @@ int32_t OKGF_CALL OKGR_LineColor_Clip(int32_t *x1, int32_t *y1, uint32_t *c1, in
 static const uint8_t phase_alpha[360] = {
 #include "tables/line_alpha_table.inc"
 };
-enum LineMode { SOLID, ALPHA, GATHER, SCATTER, ANIMATED, SHADOW };
+enum LineMode { SOLID, ALPHA, GATHER, SCATTER, ANIMATED, SHADOW, SOLID_DWORD, COPY };
 
 /* Advance the minor coordinate only when error > 0. Visit both endpoints; a zero-length line
  * visits one pixel. */
 static int32_t walk_line(void *pixels, int32_t pitch, int32_t x, int32_t y, int32_t x2, int32_t y2,
-                         uint16_t color, uint8_t alpha, enum LineMode mode, void *linear,
+                         uint32_t color, uint8_t alpha, enum LineMode mode, void *linear,
                          int32_t phase, const OkgfRect *clip, const uint8_t *shadow,
-                         int32_t shadow_pitch) {
+                         int32_t shadow_pitch, int is555) {
     int64_t dx = (int64_t)x2 - x, dy = (int64_t)y2 - y;
     int32_t sx = dx < 0 ? -1 : 1, sy = dy < 0 ? -1 : 1;
     if (dx < 0)
@@ -121,21 +121,38 @@ static int32_t walk_line(void *pixels, int32_t pitch, int32_t x, int32_t y, int3
     int64_t major = steep ? dy : dx, minor = steep ? dx : dy, error = 2 * minor - major;
     for (int64_t i = 0; i <= major; ++i) {
         if (!clip || !outcode(x, y, clip)) {
-            uint8_t *p = (uint8_t *)pixels + (ptrdiff_t)y * pitch + 2 * (ptrdiff_t)x;
-            if (mode == GATHER)
+            uint8_t *p = (uint8_t *)pixels + (ptrdiff_t)y * pitch +
+                         (mode == SOLID_DWORD ? 4 : 2) * (ptrdiff_t)x;
+            /* SR1's 555 alpha walker advances X before testing the major axis.
+             * On steep lines every blended pixel is displaced from the solid first pixel. */
+            if (mode == ALPHA && is555 && steep && i)
+                p += 2 * (ptrdiff_t)sx - (ptrdiff_t)sy * pitch;
+            if (mode == SOLID_DWORD)
+                okgf_store32(p, color);
+            else if (mode == COPY)
+                okgf_store16(p, okgf_load16((const uint8_t *)linear + (ptrdiff_t)y * shadow_pitch +
+                                            2 * (ptrdiff_t)x));
+            else if (mode == GATHER)
                 okgf_store16((uint8_t *)linear + 2 * i, okgf_load16(p));
             else if (mode == SCATTER)
                 okgf_store16(p, okgf_load16((const uint8_t *)linear + 2 * i));
             else if (mode == SOLID || (mode == ALPHA && i == 0))
                 okgf_store16(p, color);
-            else if (mode == ALPHA)
-                OKGR_PixelAlpha_16(p, color, alpha);
-            else {
-                OKGR_PixelAlpha_16(p, color, phase_alpha[phase]);
+            else if (mode == ALPHA) {
+                if (is555)
+                    OKGR_PixelAlpha_15(p, (uint16_t)color, alpha);
+                else
+                    OKGR_PixelAlpha_16(p, (uint16_t)color, alpha);
+            } else {
+                if (is555)
+                    OKGR_PixelAlpha_15(p, (uint16_t)color, phase_alpha[phase]);
+                else
+                    OKGR_PixelAlpha_16(p, (uint16_t)color, phase_alpha[phase]);
                 if (mode == SHADOW) {
                     unsigned shift = shadow[(ptrdiff_t)y * shadow_pitch + x];
-                    okgf_store16(p,
-                                 (uint16_t)((okgf_load16(p) >> shift) & okgf_shift_mask565(shift)));
+                    okgf_store16(p, (uint16_t)((okgf_load16(p) >> shift) &
+                                               (is555 ? okgf_shift_mask555(shift)
+                                                      : okgf_shift_mask565(shift))));
                 }
             }
         }
@@ -163,10 +180,10 @@ static int32_t walk_line(void *pixels, int32_t pitch, int32_t x, int32_t y, int3
 }
 #define LINE_PASS pixels, pitch, x1, y1, x2, y2, color
 void OKGF_CALL OKGR_Line_Draw_WORD(OKGF_LINE_ARGS) {
-    walk_line(LINE_PASS, 0, SOLID, NULL, 0, NULL, NULL, 0);
+    walk_line(LINE_PASS, 0, SOLID, NULL, 0, NULL, NULL, 0, 0);
 }
 void OKGF_CALL OKGR_Line_Draw_Alpha_16(OKGF_LINE_ARGS, uint8_t alpha) {
-    walk_line(LINE_PASS, alpha, ALPHA, NULL, 0, NULL, NULL, 0);
+    walk_line(LINE_PASS, alpha, ALPHA, NULL, 0, NULL, NULL, 0, 0);
 }
 void OKGF_CALL OKGR_Line_DrawClip_WORD(OKGF_LINE_ARGS, const OkgfRect *clip) {
     if (OKGR_Line_Clip(&x1, &y1, &x2, &y2, clip))
@@ -179,17 +196,39 @@ void OKGF_CALL OKGR_Line_DrawClip_Alpha_16(OKGF_LINE_ARGS, uint8_t alpha, const 
 int32_t OKGF_CALL OKGR_Line_CopyToBuf_WORD(void *linear_dest, const void *source, int32_t pitch,
                                            int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
     return walk_line((void *)source, pitch, x1, y1, x2, y2, 0, 0, GATHER, linear_dest, 0, NULL,
-                     NULL, 0);
+                     NULL, 0, 0);
 }
 int32_t OKGF_CALL OKGR_Line_CopyFromBuf_WORD(const void *linear_source, void *dest, int32_t pitch,
                                              int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
     return walk_line(dest, pitch, x1, y1, x2, y2, 0, 0, SCATTER, (void *)linear_source, 0, NULL,
-                     NULL, 0);
+                     NULL, 0, 0);
 }
 void OKGF_CALL OKGR_AnimLine_Draw_16(OKGF_LINE_ARGS, int32_t phase, const OkgfRect *clip) {
-    walk_line(LINE_PASS, 0, ANIMATED, NULL, phase, clip, NULL, 0);
+    walk_line(LINE_PASS, 0, ANIMATED, NULL, phase, clip, NULL, 0, 0);
 }
 void OKGF_CALL OKGR_AnimShadowLine_Draw_16(OKGF_LINE_ARGS, int32_t phase, const OkgfRect *clip,
                                            const uint8_t *shadow, int32_t shadow_pitch) {
-    walk_line(LINE_PASS, 0, SHADOW, NULL, phase, clip, shadow, shadow_pitch);
+    walk_line(LINE_PASS, 0, SHADOW, NULL, phase, clip, shadow, shadow_pitch, 0);
+}
+
+void OKGF_CALL OKGR_Line_Draw_DWORD(void *pixels, int32_t pitch, int32_t x1, int32_t y1, int32_t x2,
+                                    int32_t y2, uint32_t color) {
+    walk_line(LINE_PASS, 0, SOLID_DWORD, NULL, 0, NULL, NULL, 0, 0);
+}
+void OKGF_CALL OKGR_Line_Copy_WORD(void *dest, int32_t dest_pitch, const void *source,
+                                   int32_t source_pitch, int32_t x1, int32_t y1, int32_t x2,
+                                   int32_t y2) {
+    walk_line(dest, dest_pitch, x1, y1, x2, y2, 0, 0, COPY, (void *)source, 0, NULL, NULL,
+              source_pitch, 0);
+}
+void OKGF_CALL OKGR_Line_DrawClip_Alpha_15(OKGF_LINE_ARGS, uint8_t alpha, const OkgfRect *clip) {
+    if (OKGR_Line_Clip(&x1, &y1, &x2, &y2, clip))
+        walk_line(LINE_PASS, alpha, ALPHA, NULL, 0, NULL, NULL, 0, 1);
+}
+void OKGF_CALL OKGR_AnimLine_Draw_15(OKGF_LINE_ARGS, int32_t phase, const OkgfRect *clip) {
+    walk_line(LINE_PASS, 0, ANIMATED, NULL, phase, clip, NULL, 0, 1);
+}
+void OKGF_CALL OKGR_AnimShadowLine_Draw_15(OKGF_LINE_ARGS, int32_t phase, const OkgfRect *clip,
+                                           const uint8_t *shadow, int32_t shadow_pitch) {
+    walk_line(LINE_PASS, 0, SHADOW, NULL, phase, clip, shadow, shadow_pitch, 1);
 }

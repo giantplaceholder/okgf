@@ -1,6 +1,14 @@
 #ifndef OKGF_RECOVERED_H
 #define OKGF_RECOVERED_H
 #include <stdint.h>
+#define OKGF_GAME_SRHD 0
+#define OKGF_GAME_SR1 1
+#ifndef OKGF_GAME_RELEASE
+#define OKGF_GAME_RELEASE OKGF_GAME_SRHD
+#endif
+#if OKGF_GAME_RELEASE != OKGF_GAME_SRHD && OKGF_GAME_RELEASE != OKGF_GAME_SR1
+#error Unsupported OKGF_GAME_RELEASE
+#endif
 #if defined(_MSC_VER)
 #define OKGF_CALL __cdecl
 #elif defined(__i386__)
@@ -479,8 +487,10 @@ void OKGF_CALL OKGR_AlphaIndexed_CopyDrawClip_Alpha_16(OKGF_RLE_CLIP_ARGS, uint8
 void OKGF_CALL OKGR_AlphaIndexed_AlphaDrawClip_16(OKGF_RLE_CLIP_ARGS);
 void OKGF_CALL OKGR_AlphaIndexed_AlphaDrawClip_Alpha_16(OKGF_RLE_CLIP_ARGS, uint8_t alpha);
 
-/* Font alpha masks have one literal opacity byte per pixel. RGB565 blends;
- * BGRA replaces RGB with color's low 24 bits and alpha with the literal byte. */
+/* Font alpha masks have one literal opacity byte per pixel. RGB565 blends.
+ * SRHD BGRA replaces RGB with color's low 24 bits and alpha with the literal byte.
+ * SR1 BGRA blends RGB using rounded /255 contributions and saturates the sum of
+ * destination alpha and the literal byte. */
 void OKGF_CALL OKGR_TransBuf_FillAlpha_16(OKGF_RLE_ARGS, uint16_t color);
 void OKGF_CALL OKGR_TransBuf_FillAlpha_RGBA(OKGF_RLE_ARGS, uint32_t color);
 void OKGF_CALL OKGR_TransBuf_FillAlphaClip_16(OKGF_RLE_CLIP_ARGS, uint16_t color);
@@ -501,6 +511,69 @@ typedef struct OkgfF6Header {
 } OkgfF6Header;
 void OKGF_CALL OKGR_F5_DrawRGBA(void *dest, int32_t pitch, const OkgfF5Header *source);
 void OKGF_CALL OKGR_F6_DrawRGBA(void *dest, int32_t pitch, const OkgfF6Header *source);
+
+/* RGB555 and packed three-byte color/alpha paths used by Space Rangers 1.
+ * RGB555 occupies bits 0..14. Packed 5558/5658 pixels hold a little-endian WORD
+ * followed by one alpha byte. Select OKGF_GAME_SR1 for release-specific behavior. */
+void OKGF_CALL OKGF_ConvertRGBto555(const void *source, void *dest, int32_t dest_pitch,
+                                    int32_t width, int32_t height);
+#define OKGF_EXPAND555_DECL(name)                                                                  \
+    void OKGF_CALL name(const void *source, int32_t source_pitch, void *dest, int32_t dest_pitch,  \
+                        int32_t width, int32_t height)
+OKGF_EXPAND555_DECL(OKGF_Convert555toRGB);
+OKGF_EXPAND555_DECL(OKGF_Convert555toBGR);
+OKGF_EXPAND555_DECL(OKGF_Convert555toBGRA);
+OKGF_EXPAND555_DECL(OKGF_Convert5558toBGRA);
+#undef OKGF_EXPAND555_DECL
+void OKGF_CALL OKGF_Convert_565to555(OKGF_RECT_ARGS);
+void OKGF_CALL OKGF_Convert_8888to555(OKGF_RECT_ARGS);
+void OKGF_CALL OKGR_HACopy_XY_XY_15(OKGF_RECT_ARGS);
+void OKGF_CALL OKGR_AlphaSimpleBuf_Draw_15(OKGF_RECT_ARGS);
+void OKGF_CALL OKGR_AlphaSimpleBufPalAlpha_Draw_15(OKGF_RECT_ARGS, const void *palette);
+void OKGF_CALL OKGR_PixelAlpha_15(void *pixel, uint16_t color, uint8_t alpha);
+void OKGF_CALL OKGR_ShrLight_15(void *pixels, int32_t pitch, int32_t width, int32_t height,
+                                int32_t shift);
+void OKGF_CALL OKGR_ShrLightMask_15(void *pixels, int32_t pitch, const void *mask,
+                                    int32_t mask_pitch, int32_t width, int32_t height);
+void OKGF_CALL OKGR_MulLightMask_15(void *pixels, int32_t pitch, const void *mask,
+                                    int32_t mask_pitch, int32_t width, int32_t height);
+void OKGF_CALL OKGR_Line_Draw_DWORD(void *pixels, int32_t pitch, int32_t x1, int32_t y1, int32_t x2,
+                                    int32_t y2, uint32_t color);
+void OKGF_CALL OKGR_Line_Copy_WORD(void *dest, int32_t dest_pitch, const void *source,
+                                   int32_t source_pitch, int32_t x1, int32_t y1, int32_t x2,
+                                   int32_t y2);
+void OKGF_CALL OKGR_Line_DrawClip_Alpha_15(OKGF_LINE_ARGS, uint8_t alpha, const OkgfRect *clip);
+void OKGF_CALL OKGR_AnimLine_Draw_15(OKGF_LINE_ARGS, int32_t phase, const OkgfRect *clip);
+void OKGF_CALL OKGR_AnimShadowLine_Draw_15(OKGF_LINE_ARGS, int32_t phase, const OkgfRect *clip,
+                                           const uint8_t *shadow, int32_t shadow_pitch);
+void OKGF_CALL OKGF_LineIp_15(void *pixels, int32_t pitch, int32_t x1, int32_t y1, uint32_t color1,
+                              int32_t x2, int32_t y2, uint32_t color2);
+void OKGF_CALL OKGF_Triangle_15(void *pixels, int32_t pitch, int32_t x1, int32_t y1,
+                                uint32_t color1, int32_t x2, int32_t y2, uint32_t color2,
+                                int32_t x3, int32_t y3, uint32_t color3, const OkgfRect *clip);
+void OKGF_CALL OKGR_Alpha64Trapezium_15(OKGF_TRAPEZIUM_ARGS, uint16_t color, const OkgfRect *clip);
+void OKGF_CALL OKGR_Alpha128Trapezium_15(OKGF_TRAPEZIUM_ARGS, uint16_t color, const OkgfRect *clip);
+void OKGF_CALL OKGR_Planet2_DrawAndLightClip_15(OKGF_PLANET_ARGS, const OkgfRect *clip);
+void OKGF_CALL OKGR_Planet3_DrawAndLightClip_15(OKGF_PLANET_ARGS, const OkgfRect *clip);
+
+int32_t OKGF_CALL OKGR_TransBuf_BuildFromRGBA_15(const void *source, int32_t pitch, int32_t width,
+                                                 int32_t height, void *dest);
+int32_t OKGF_CALL OKGR_TransAlphaBuf_BuildFromRGBA_15(const void *source, int32_t pitch,
+                                                      int32_t width, int32_t height, void *dest);
+void OKGF_CALL OKGR_TransBuf_Convert565to555_WORD(OkgfRleHeader *source);
+void OKGF_CALL OKGR_TransBuf_Draw_5658(OKGF_RLE_ARGS);
+void OKGF_CALL OKGR_TransAlphaBuf_Draw_5658(OKGF_RLE_ARGS);
+void OKGF_CALL OKGR_TransAlphaBuf_Draw_5558(OKGF_RLE_ARGS);
+void OKGF_CALL OKGR_AlphaBuf_Draw_5658(OKGF_RLE_ARGS);
+void OKGF_CALL OKGR_TransBuf_HADrawClip_15(OKGF_RLE_CLIP_ARGS);
+void OKGF_CALL OKGR_AlphaBuf_DrawClip_15(OKGF_RLE_CLIP_ARGS);
+void OKGF_CALL OKGR_TransBuf_FillAlphaClip_15(OKGF_RLE_CLIP_ARGS, uint16_t color);
+void OKGF_CALL OKGR_AlphaIndexed_Copy16to15(OkgfRleHeader *source);
+void OKGF_CALL OKGR_AlphaIndexed_Alpha16to15(OkgfRleHeader *source);
+void OKGF_CALL OKGR_AlphaIndexed_CopyDraw_5658(OKGF_RLE_ARGS);
+void OKGF_CALL OKGR_AlphaIndexed_AlphaDraw_5658(OKGF_RLE_ARGS);
+void OKGF_CALL OKGR_AlphaIndexed_AlphaDraw_5558(OKGF_RLE_ARGS);
+void OKGF_CALL OKGR_AlphaIndexed_AlphaDrawClip_15(OKGF_RLE_CLIP_ARGS);
 
 #ifdef __cplusplus
 }

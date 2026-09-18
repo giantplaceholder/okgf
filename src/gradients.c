@@ -7,29 +7,50 @@
 
 /* Dispatch on matching RGB channels and four special alpha values. Color interpolation keeps
  * 16 fractional bits. */
-static uint16_t pack565(const int32_t c[4]) {
+static uint16_t pack_color(const int32_t c[4], int is555) {
+    if (is555)
+        return (uint16_t)(((c[2] >> 9) & 0x7c00) | ((c[1] >> 14) & 0x3e0) | ((c[0] >> 19) & 31));
     return (uint16_t)(((c[2] >> 8) & 0xf800) | ((c[1] >> 13) & 0x7e0) | ((c[0] >> 19) & 31));
 }
 static unsigned pack_scaled(unsigned a, unsigned r, unsigned g, unsigned b) {
     return ((okgf_scale63_rounded(a, r) & 62) << 10) | (okgf_scale63_rounded(a, g) << 5) |
            (okgf_scale63_rounded(a, b) >> 1);
 }
-static void shade(uint8_t *p, const int32_t c[4], unsigned mode) {
-    unsigned old = p[0] | (unsigned)p[1] << 8, s = pack565(c), out;
+static void shade(uint8_t *p, const int32_t c[4], unsigned mode, int is555) {
+    unsigned old = p[0] | (unsigned)p[1] << 8, s = pack_color(c, is555), out;
     switch (mode) {
     case 255:
         out = s;
         break;
     case 128:
-        out = ((s >> 1) & 0x7bef) + ((old >> 1) & 0x7bef);
+        out = (is555 ? (((unsigned)c[2] >> 10) & 0x3c00) | (((unsigned)c[1] >> 15) & 0x1f0) |
+                           (((unsigned)c[0] >> 20) & 15)
+                     : (s >> 1) & 0x7bef) +
+              ((old >> 1) & (is555 ? 0x3def : 0x7bef));
         break;
     case 192:
-        out = s - ((s >> 2) & 0x39e7) + ((old >> 2) & 0x39e7);
+        out = s - ((s >> 2) & (is555 ? 0x1ce7 : 0x39e7)) + ((old >> 2) & (is555 ? 0x1ce7 : 0x39e7));
         break;
     case 64:
-        out = ((s >> 2) & 0x39e7) + old - ((old >> 2) & 0x39e7);
+        /* The RGB555 quarter-alpha specialization retains a fourth green bit
+         * in bit 4 of the blue channel (mask 0xf0 instead of 0xe0). */
+        out = (is555 ? (((unsigned)c[2] >> 11) & 0x1c00) | (((unsigned)c[1] >> 16) & 0xf0) |
+                           (((unsigned)c[0] >> 21) & 7)
+                     : (s >> 2) & 0x39e7) +
+              old - ((old >> 2) & (is555 ? 0x1ce7 : 0x39e7));
         break;
     default: {
+        if (is555) {
+            unsigned a = (c[3] >> 19) & 31;
+            unsigned front = okgf_scale31_rounded((unsigned)c[0] >> 19, a) |
+                             (okgf_scale31_rounded((unsigned)c[1] >> 19, a) << 5) |
+                             (okgf_scale31_rounded((unsigned)c[2] >> 19, a) << 10);
+            unsigned back = okgf_scale31_rounded(old & 31, 31 - a) |
+                            (okgf_scale31_rounded((old >> 5) & 31, 31 - a) << 5) |
+                            (okgf_scale31_rounded((old >> 10) & 31, 31 - a) << 10);
+            out = front + back;
+            break;
+        }
         unsigned a = (c[3] >> 18) & 63;
         out = pack_scaled(a, (unsigned)c[2] >> 18, (unsigned)c[1] >> 18, (unsigned)c[0] >> 18) +
               pack_scaled(63 - a, (old >> 10) & 62, (old >> 5) & 63, (old & 31) * 2);
@@ -49,8 +70,8 @@ static unsigned alpha_mode(uint32_t a, uint32_t b, uint32_t c) {
     c >>= 24;
     return a == b && b == c && (a == 64 || a == 128 || a == 192 || a == 255) ? a : 0;
 }
-void OKGF_CALL OKGF_LineIp_16(void *pixels, int32_t pitch, int32_t x1, int32_t y1, uint32_t color1,
-                              int32_t x2, int32_t y2, uint32_t color2) {
+static void gradient_line(void *pixels, int32_t pitch, int32_t x1, int32_t y1, uint32_t color1,
+                          int32_t x2, int32_t y2, uint32_t color2, int is555) {
     if (!((color1 | color2) & 0xff000000))
         return;
     int32_t c[4], end[4], step[4];
@@ -66,7 +87,7 @@ void OKGF_CALL OKGF_LineIp_16(void *pixels, int32_t pitch, int32_t x1, int32_t y
     uint8_t *p = (uint8_t *)pixels + (ptrdiff_t)y1 * pitch + (ptrdiff_t)x1 * 2;
     int64_t error = 2 * minor - major;
     for (int64_t i = 0;; ++i) {
-        shade(p, c, mode);
+        shade(p, c, mode, is555);
         if (i == major)
             break;
         p += along;
@@ -170,9 +191,9 @@ static void edge_segment(ColorEdge *edge, const ColorVertex *v, int count) {
     for (int k = 0; k < 4; ++k)
         edge->dc[k] = (end[k] - edge->c[k]) / height;
 }
-void OKGF_CALL OKGF_Triangle_16(void *pixels, int32_t pitch, int32_t x1, int32_t y1,
-                                uint32_t color1, int32_t x2, int32_t y2, uint32_t color2,
-                                int32_t x3, int32_t y3, uint32_t color3, const OkgfRect *clip) {
+static void gradient_triangle(void *pixels, int32_t pitch, int32_t x1, int32_t y1, uint32_t color1,
+                              int32_t x2, int32_t y2, uint32_t color2, int32_t x3, int32_t y3,
+                              uint32_t color3, const OkgfRect *clip, int is555) {
     ColorVertex v[12] = {{x1, y1, color1}, {x2, y2, color2}, {x3, y3, color3}};
     OkgfRect bounds;
     memcpy(&bounds, clip, sizeof(bounds));
@@ -219,7 +240,7 @@ void OKGF_CALL OKGF_Triangle_16(void *pixels, int32_t pitch, int32_t x1, int32_t
             }
             uint8_t *p = (uint8_t *)pixels + (ptrdiff_t)y * pitch + (ptrdiff_t)x * 2;
             for (int32_t i = 0; i < length; ++i, p += 2) {
-                shade(p, c, mode);
+                shade(p, c, mode, is555);
                 for (int k = 0; k < 4; ++k)
                     c[k] += dc[k];
             }
@@ -231,3 +252,18 @@ void OKGF_CALL OKGF_Triangle_16(void *pixels, int32_t pitch, int32_t x1, int32_t
         }
     }
 }
+
+#define GRADIENT_VARIANT(bits, is555)                                                              \
+    void OKGF_CALL OKGF_LineIp_##bits(void *pixels, int32_t pitch, int32_t x1, int32_t y1,         \
+                                      uint32_t color1, int32_t x2, int32_t y2, uint32_t color2) {  \
+        gradient_line(pixels, pitch, x1, y1, color1, x2, y2, color2, is555);                       \
+    }                                                                                              \
+    void OKGF_CALL OKGF_Triangle_##bits(void *pixels, int32_t pitch, int32_t x1, int32_t y1,       \
+                                        uint32_t color1, int32_t x2, int32_t y2, uint32_t color2,  \
+                                        int32_t x3, int32_t y3, uint32_t color3,                   \
+                                        const OkgfRect *clip) {                                    \
+        gradient_triangle(pixels, pitch, x1, y1, color1, x2, y2, color2, x3, y3, color3, clip,     \
+                          is555);                                                                  \
+    }
+GRADIENT_VARIANT(16, 0)
+GRADIENT_VARIANT(15, 1)
