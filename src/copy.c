@@ -89,6 +89,20 @@ static void copy_rect(OKGF_RECT_ARGS, enum CopyMode mode, uint16_t key) {
                 okgf_store32(d + (ptrdiff_t)2 * x, first);
                 okgf_store32(d + (ptrdiff_t)2 * x + 4, second);
             }
+        } else if (mode == COPY_HALF || mode == COPY_HALF555) {
+            /* Both releases load four source and destination pixels before either
+             * DWORD store. A pixel-at-a-time loop changes overlapping copies.
+             * SR1: 0x1000DCAF (555), HD: 0x1005C3E1 (565). */
+            uint32_t mask = mode == COPY_HALF555 ? UINT32_C(0x7BDE7BDE) : UINT32_C(0xF7DEF7DE);
+            for (; x <= width - 4; x += 4) {
+                const uint8_t *sp = s + (ptrdiff_t)2 * x;
+                uint8_t *dp = d + (ptrdiff_t)2 * x;
+                uint32_t first = ((okgf_load32(sp) & mask) >> 1) + ((okgf_load32(dp) & mask) >> 1);
+                uint32_t second =
+                    ((okgf_load32(sp + 4) & mask) >> 1) + ((okgf_load32(dp + 4) & mask) >> 1);
+                okgf_store32(dp, first);
+                okgf_store32(dp + 4, second);
+            }
         }
         for (; x < width; ++x) {
             uint16_t v = okgf_load16(s + 2 * x);

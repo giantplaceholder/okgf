@@ -5,18 +5,30 @@
 static uint16_t rgb565(const uint8_t *s) {
     return (uint16_t)((s[0] & 248u) << 8 | (s[1] & 252u) << 3 | s[2] >> 3);
 }
+static uint16_t rgb555(const uint8_t *s) {
+    return (uint16_t)((s[0] & 248u) << 7 | (s[1] & 248u) << 2 | s[2] >> 3);
+}
 
 /* Original: 0x1005B4D0 (RGB565), 0x1005B570 (RGB555).
  * Source pitch is implicitly width * 3. */
 static void pack_rgb(const void *source, void *dest, int32_t pitch, int32_t width, int32_t height,
                      int is555) {
+    if (width <= 0 || height <= 0)
+        return;
     const uint8_t *s = source;
     uint8_t *d = dest;
     for (int32_t y = 0; y < height; ++y) {
-        for (int32_t x = 0; x < width; ++x, s += 3) {
-            uint16_t v =
-                is555 ? (uint16_t)((s[0] & 248u) << 7 | (s[1] & 248u) << 2 | s[2] >> 3) : rgb565(s);
-            okgf_store16(d + 2 * x, v);
+        int32_t x = 0;
+        /* Both releases read two RGB triples before the DWORD store. Preserve
+         * that ordering when the packed output overlaps the source. */
+        for (; x <= width - 2; x += 2, s += 6) {
+            uint32_t first = is555 ? rgb555(s) : rgb565(s);
+            uint32_t second = is555 ? rgb555(s + 3) : rgb565(s + 3);
+            okgf_store32(d + (ptrdiff_t)2 * x, first | (second << 16));
+        }
+        if (x < width) {
+            okgf_store16(d + (ptrdiff_t)2 * x, is555 ? rgb555(s) : rgb565(s));
+            s += 3;
         }
         d += pitch;
     }
