@@ -39,9 +39,13 @@ One library instance targets one release.
 
 Set `-DOKGF_MATH_BACKEND=...` to choose the math implementation:
 
-- `COMPATIBLE` (default): compatibility arithmetic.
+- `NATIVE` (default): faster host arithmetic, with possible numerical differences.
+- `COMPATIBLE`: compatibility arithmetic.
 - `EXACT`: x87 arithmetic and trigonometry; requires x86.
-- `NATIVE`: faster host arithmetic, with possible numerical differences.
+
+NATIVE matched the original DLL byte-for-byte in tested SR2HD game-resource
+workloads. Broader x87 tests found small rescaling differences; use COMPATIBLE
+or EXACT when closer x87 fidelity is needed.
 
 ## License
 

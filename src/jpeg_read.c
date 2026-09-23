@@ -37,6 +37,26 @@ void OKGF_CALL okgf_cancel_read_jpeg(OkgfJpegReadContext *context) {
     free(context);
 }
 
+/* Keep ownership in the caller, outside libjpeg's longjmp recovery frame. */
+static int start_decoder(OkgfJpegReadContext *context, int32_t *width, int32_t *height) {
+    JpegState *state = context->decoder;
+    state->jpeg.err = jpeg_std_error(&state->error);
+    state->error.error_exit = fail;
+    state->error.output_message = ignore_message;
+    if (setjmp(state->failure))
+        return 0;
+    jpeg_create_decompress(&state->jpeg);
+    jpeg_mem_src(&state->jpeg, context->source_data, (unsigned long)context->source_size);
+    jpeg_read_header(&state->jpeg, TRUE);
+    jpeg_start_decompress(&state->jpeg);
+    context->width = (int32_t)state->jpeg.output_width;
+    context->height = (int32_t)state->jpeg.output_height;
+    context->channels = state->jpeg.output_components;
+    memcpy(width, &context->width, 4);
+    memcpy(height, &context->height, 4);
+    return 1;
+}
+
 OkgfJpegReadContext *OKGF_CALL OKGR_ReadStart_JPEG_Buf(const uint8_t *source, int32_t source_size,
                                                        int32_t *width, int32_t *height) {
     if (!source || source_size <= 0)
@@ -51,22 +71,10 @@ OkgfJpegReadContext *OKGF_CALL OKGR_ReadStart_JPEG_Buf(const uint8_t *source, in
     context->decoder = state;
     context->source_data = source;
     context->source_size = source_size;
-    state->jpeg.err = jpeg_std_error(&state->error);
-    state->error.error_exit = fail;
-    state->error.output_message = ignore_message;
-    if (setjmp(state->failure)) {
+    if (!start_decoder(context, width, height)) {
         okgf_cancel_read_jpeg(context);
         return NULL;
     }
-    jpeg_create_decompress(&state->jpeg);
-    jpeg_mem_src(&state->jpeg, source, (unsigned long)source_size);
-    jpeg_read_header(&state->jpeg, TRUE);
-    jpeg_start_decompress(&state->jpeg);
-    context->width = (int32_t)state->jpeg.output_width;
-    context->height = (int32_t)state->jpeg.output_height;
-    context->channels = state->jpeg.output_components;
-    memcpy(width, &context->width, 4);
-    memcpy(height, &context->height, 4);
     return context;
 }
 

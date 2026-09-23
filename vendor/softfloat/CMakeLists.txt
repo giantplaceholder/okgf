@@ -73,10 +73,11 @@ set_target_properties(okgf_softfloat PROPERTIES
   POSITION_INDEPENDENT_CODE ON
   C_VISIBILITY_PRESET hidden)
 target_compile_features(okgf_softfloat PUBLIC c_std_11)
-target_include_directories(okgf_softfloat PUBLIC
+target_include_directories(okgf_softfloat SYSTEM PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}"
-  "${CMAKE_CURRENT_SOURCE_DIR}/source/include"
-  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/source/8086-SSE")
+  "${CMAKE_CURRENT_SOURCE_DIR}/source/include")
+target_include_directories(okgf_softfloat PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/source/8086-SSE")
 target_compile_definitions(okgf_softfloat PUBLIC SOFTFLOAT_FAST_INT64
   PRIVATE INLINE_LEVEL=5 SOFTFLOAT_FAST_DIV64TO32)
 if(OKGF_PORTABLE_MATH)

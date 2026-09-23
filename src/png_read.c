@@ -30,27 +30,13 @@ void OKGF_CALL okgf_cancel_read_png(OkgfPngReadContext *context) {
     free(context);
 }
 
-static OkgfPngReadContext *begin(const uint8_t *source, int32_t source_size, int32_t *width,
-                                 int32_t *height, int32_t *palette_count) {
-    if (!source || source_size < 0)
-        return NULL;
-    OkgfPngReadContext *context = calloc(1, sizeof(*context));
-    if (!context)
-        return NULL;
-    context->source_data = source;
-    context->source_size = source_size;
-    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, ignore_warning);
-    context->png = png;
-    png_infop info = png ? png_create_info_struct(png) : NULL;
-    context->info = info;
-    if (!info) {
-        okgf_cancel_read_png(context);
-        return NULL;
-    }
-    if (setjmp(png_jmpbuf(png))) {
-        okgf_cancel_read_png(context);
-        return NULL;
-    }
+/* Keep allocation and cleanup outside libpng's longjmp recovery frame. */
+static int start_decoder(OkgfPngReadContext *context, int32_t *width, int32_t *height,
+                         int32_t *palette_count) {
+    png_structp png = context->png;
+    png_infop info = context->info;
+    if (setjmp(png_jmpbuf(png)))
+        return 0;
     png_set_read_fn(png, context, read_source);
     png_set_sig_bytes(png, 0);
     png_read_info(png, info);
@@ -70,12 +56,10 @@ static OkgfPngReadContext *begin(const uint8_t *source, int32_t source_size, int
         } else if (color_type == PNG_COLOR_TYPE_GRAY) {
             context->palette_count = 256;
         } else {
-            okgf_cancel_read_png(context);
-            return NULL;
+            return 0;
         }
         if (png_get_channels(png, info) != 1) {
-            okgf_cancel_read_png(context);
-            return NULL;
+            return 0;
         }
     }
     context->width = (int32_t)png_get_image_width(png, info);
@@ -84,6 +68,30 @@ static OkgfPngReadContext *begin(const uint8_t *source, int32_t source_size, int
     memcpy(height, &context->height, 4);
     if (palette_count)
         memcpy(palette_count, &context->palette_count, 4);
+    return 1;
+}
+
+static OkgfPngReadContext *begin(const uint8_t *source, int32_t source_size, int32_t *width,
+                                 int32_t *height, int32_t *palette_count) {
+    if (!source || source_size < 0)
+        return NULL;
+    OkgfPngReadContext *context = calloc(1, sizeof(*context));
+    if (!context)
+        return NULL;
+    context->source_data = source;
+    context->source_size = source_size;
+    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, ignore_warning);
+    context->png = png;
+    png_infop info = png ? png_create_info_struct(png) : NULL;
+    context->info = info;
+    if (!info) {
+        okgf_cancel_read_png(context);
+        return NULL;
+    }
+    if (!start_decoder(context, width, height, palette_count)) {
+        okgf_cancel_read_png(context);
+        return NULL;
+    }
     return context;
 }
 
