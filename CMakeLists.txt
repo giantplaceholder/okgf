@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(okgf VERSION 0.1.0 LANGUAGES C)
+option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 set(OKGF_GAME_RELEASE "SRHD" CACHE STRING "Original game behavior: SRHD or SR1")
 set_property(CACHE OKGF_GAME_RELEASE PROPERTY STRINGS SRHD SR1)
 if(NOT OKGF_GAME_RELEASE MATCHES "^(SRHD|SR1)$")
@@ -28,12 +29,7 @@ if(OKGF_MATH_BACKEND STREQUAL "NATIVE" AND OKGF_PORTABLE_MATH)
   message(FATAL_ERROR "OKGF_PORTABLE_MATH applies to COMPATIBLE, not NATIVE")
 endif()
 message(STATUS "OKGF math backend: ${OKGF_MATH_BACKEND}")
-if(EMSCRIPTEN)
-  set(OKGF_LIBRARY_TYPE STATIC)
-else()
-  set(OKGF_LIBRARY_TYPE SHARED)
-endif()
-add_library(okgf ${OKGF_LIBRARY_TYPE}
+add_library(okgf
   src/math/precision.c
   src/cpu.c
   src/pixels.c

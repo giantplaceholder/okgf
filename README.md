@@ -24,6 +24,18 @@ cmake --build build
 Output: `okgf.dll` on Windows, `libokgf.dylib` on macOS, or `libokgf.so` on Linux.
 Headers are in `include/`. The CMake target is `okgf`.
 
+Shared libraries are the default. Select a static build with `BUILD_SHARED_LIBS=OFF`:
+
+```sh
+cmake -S . -B build-static -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
+cmake --build build-static
+```
+
+This produces a static archive (`libokgf.a` on Unix, `okgf.lib` with MSVC).
+Use `BUILD_SHARED_LIBS=ON` for shared builds where the toolchain supports them.
+Parent CMake projects can set this option before `add_subdirectory()` and link
+the `okgf` target to inherit its codec and math dependencies.
+
 The default game release is HD. Build SR1 with:
 
 ```sh
